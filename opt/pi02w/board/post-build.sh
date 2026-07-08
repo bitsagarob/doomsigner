@@ -53,11 +53,65 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
 rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
 rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip
 
+# ### Image slimming: files verified unused by the seedsigner app
+# ### (dependency-closure scan of every ELF + import scan of every shipped pyc)
+
+# rpi-userland demo/diagnostic binaries; picamera talks to libmmal* directly
+for f in containers_check_frame_int containers_datagram_receiver containers_datagram_sender \
+         containers_dump_pktfile containers_rtp_decoder containers_stream_client \
+         containers_stream_server containers_test containers_test_bits containers_test_uri \
+         containers_uri_pipe raspistill raspivid raspividyuv raspiyuv mmal_vc_diag \
+         vchiq_test vcsmem vcmailbox tvservice vcgencmd dtoverlay dtoverlay-pre \
+         dtoverlay-post dtmerge read_zbar read_zbar.py zbarcam fribidi qr; do
+  rm -f ${TARGET_DIR}/usr/bin/${f}
+done
+
+# Libraries nothing in the image links against (GL stack, media-container plugins,
+# dtoverlay helpers, v4l compat shims, harfbuzz subsetter)
+rm -rf ${TARGET_DIR}/usr/lib/plugins \
+       ${TARGET_DIR}/usr/lib/libv4l
+rm -f  ${TARGET_DIR}/usr/lib/libharfbuzz-subset.so* \
+       ${TARGET_DIR}/usr/lib/libdtovl.so \
+       ${TARGET_DIR}/usr/lib/libdebug_sym.so \
+       ${TARGET_DIR}/usr/lib/libvcilcs.so \
+       ${TARGET_DIR}/usr/lib/libkhrn_client.so \
+       ${TARGET_DIR}/usr/lib/libopenmaxil.so \
+       ${TARGET_DIR}/usr/lib/libEGL.so \
+       ${TARGET_DIR}/usr/lib/libGLESv2.so \
+       ${TARGET_DIR}/usr/lib/libOpenVG.so \
+       ${TARGET_DIR}/usr/lib/libWFC.so \
+       ${TARGET_DIR}/usr/lib/libbrcmEGL.so \
+       ${TARGET_DIR}/usr/lib/libbrcmGLESv2.so \
+       ${TARGET_DIR}/usr/lib/libbrcmOpenVG.so \
+       ${TARGET_DIR}/usr/lib/libbrcmWFC.so
+
+# Python stdlib subsystems with no importers in the image (scan of all pyc string tables;
+# concurrent/ stays: picamera.mmal uses concurrent.futures)
+rm -rf ${TARGET_DIR}/usr/lib/python3.12/asyncio \
+       ${TARGET_DIR}/usr/lib/python3.12/email \
+       ${TARGET_DIR}/usr/lib/python3.12/xml \
+       ${TARGET_DIR}/usr/lib/python3.12/http \
+       ${TARGET_DIR}/usr/lib/python3.12/multiprocessing \
+       ${TARGET_DIR}/usr/lib/python3.12/wsgiref \
+       ${TARGET_DIR}/usr/lib/python3.12/venv \
+       ${TARGET_DIR}/usr/lib/python3.12/pydoc_data \
+       ${TARGET_DIR}/usr/lib/python3.12/zoneinfo
+rm -f  ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_asyncio.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_multiprocessing.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_posixshmem.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_zoneinfo.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/audioop.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_lsprof.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/spwd.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/syslog.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/xxlimited*.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_xxinterpchannels.* \
+       ${TARGET_DIR}/usr/lib/python3.12/lib-dynload/_xxsubinterpreters.*
+
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
 
 rm -f ${TARGET_DIR}/usr/lib/python3/config-3.12-arm-linux-gnueabihf/Makefile
-rm -f ${TARGET_DIR}/usr/lib/python3/multiprocessing/connection.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/json/decoder.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/numpy/core/_string_helpers.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/site-packages/numpy/distutils/ccompiler.pyc
@@ -75,7 +129,6 @@ rm -f ${TARGET_DIR}/usr/lib/python3/traceback.pyc
 rm -f ${TARGET_DIR}/usr/lib/python3/_sysconfigdata__linux_arm-linux-gnueabihf.pyc
 
 find ${TARGET_DIR}/usr/lib/python3.12 -name '*.py' \
-	-not -path "*/python3.12/multiprocessing/connection.py" \
 	-not -path "*/python3.12/json/decoder.py" \
 	-not -path "*/python3.12/site-packages/numpy/core/_string_helpers.py" \
 	-not -path "*/python3.12/site-packages/numpy/distutils/ccompiler.py" \
