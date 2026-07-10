@@ -2,28 +2,34 @@
 
 The `-dev` images exist to make it convenient to develop SeedSigner *on the device itself*. They run the same application, from the same buildroot environment, with the same libraries as the release images with additions to aid in development conveniences. **They are not security-hardened: networking and SSH are enabled. Never use a dev image with real funds.**
 
+This doc is the **reference** for what the developer images contain and how they're configured. For the hands-on side — the quick start, syncing your code, controlling the app, and running the tests — see [dev_workflow.md](dev_workflow.md).
+
+Available for all four boards: `pi0`, `pi02w`, `pi2`, and `pi4`. Throughout this doc, paths written as `<board>-dev/...` refer to the board you're building for (e.g. `pi0-dev/board/post-build.sh`).
+
 ## How the dev image stays close to the release image
 
 The dev board config deliberately *references* the release files and layers a delta on top, so release changes flow into the dev image automatically:
 
 | Piece | Release base | Dev delta |
 |---|---|---|
-| kernel config | `../pi02w/board/kernel.config` | `pi02w-dev/board/kernel.config.fragment` |
-| busybox config | `../pi02w/board/busybox.config` | `pi02w-dev/board/busybox.config.fragment` |
+| kernel config | `../<board>/board/kernel.config` | `<board>-dev/board/kernel.config.fragment` |
+| busybox config | `../<board>/board/busybox.config` | `<board>-dev/board/busybox.config.fragment` |
 | rootfs overlay | `../rootfs-overlay/` | `../rootfs-overlay-dev/` (applied second) |
-| defconfig | copied from `pi02w_defconfig` | dev packages appended at the bottom |
+| defconfig | copied from `<board>_defconfig` | dev packages appended at the bottom |
 | post-build | derived from release script | skips the image-slimming steps |
+
+Each board's dev config bases on **its own** release `kernel.config` / `busybox.config` (so `pi0-dev` uses `../pi0/...`, `pi4-dev` uses `../pi4/...`, and so on) plus a small board-specific fragment. The kernel fragments are almost identical across boards; the notable exceptions are documented inline in each fragment (the Pi Zero / Zero W needs `CONFIG_PM` + `CONFIG_RASPBERRYPI_POWER` and an explicit `CONFIG_USB` to power its USB block, and the Pi 4 needs the SD-card voltage regulators or `/dev/mmcblk0` never appears).
 
 Like the release image, the dev image boots entirely from an initramfs (the root filesystem lives in RAM). Persistence is provided by a second partition (see below).
 
 ## What's added
 
-- **Networking**: onboard wifi (Zero 2 W / Pi 3 / Pi 4), any `eth*` USB ethernet adapter, and the Pi 3/4's onboard NIC. Everything is DHCP.
-- **USB relay**: `dtoverlay=dwc2` plus a built-in `g_ether` gadget. Plug the Pi's USB port into a computer and it shows up as an "RNDIS/Ethernet Gadget" at a fixed `10.55.0.1`, so `ssh root@10.55.0.1` works immediately with no host-side configuration. If you also want the Pi to reach the internet over that cable, turn on internet sharing on the host (see [seedsigner docs/usb_relay.md](https://github.com/SeedSigner/seedsigner/blob/dev/docs/usb_relay.md) for host-side setup — the SD-card-side steps there are *not* needed, the dev image is preconfigured) — the Pi detects the host's DHCP server and uses that instead of its static address. See "USB relay networking" below.
+- **Networking**: onboard wifi (Zero 2 W / Pi 3 / Pi 4), any `eth*` USB ethernet adapter, and the Pi 2/3/4's onboard NIC. Everything is DHCP.
+- **USB relay**: `dtoverlay=dwc2` plus a built-in `g_ether` gadget. Plug the Pi's USB **OTG** port into a computer and it shows up as an "RNDIS/Ethernet Gadget" at a fixed `10.55.0.1`, so `ssh root@10.55.0.1` works immediately with no host-side configuration. This requires an OTG-capable port: the micro-USB **data** port on the Pi Zero / Zero W / Zero 2 W, or the **USB-C** power port on the Pi 4. The Pi 2 / Pi 3 Model B route USB through an onboard hub with no exposed OTG, so on those boards use the onboard Ethernet (or a USB wifi/ethernet adapter) instead. If you also want the Pi to reach the internet over the cable, turn on internet sharing on the host (see [seedsigner docs/usb_relay.md](https://github.com/SeedSigner/seedsigner/blob/dev/docs/usb_relay.md) for host-side setup — the SD-card-side steps there are *not* needed, the dev image is preconfigured) — the Pi detects the host's DHCP server and uses that instead of its static address. See "USB relay networking" below.
 - **SSH server** (dropbear): log in as `root` with the root password below, or drop an `authorized_keys` file on the boot partition. Host keys persist on the data partition, so no fingerprint warnings after reboots.
 - **HDMI console + USB keyboard/mouse**: a root shell runs on `tty1`.
 - **Persistent storage**: a 256MB ext4 partition (label `seedsigner-data`) mounted at `/mnt/data`, **auto-grown to fill the rest of the microSD on first boot** (so a 32GB card gives you ~32GB of `/mnt/data`). Because the whole OS runs from RAM, you can pull the microSD while the device is running (`/mnt/data` disappears, everything else keeps working) and reinsert it later — `/mnt/data` auto-remounts, no reboot needed. Run `sync` before pulling the card if you have unsaved writes.
-- **CLI tools**: `git`, `rsync`, `ssh`/`scp` (dropbear), `vi` (busybox), `nano`, `wget`, `ip`/`ifconfig`/`ping`/`nslookup`, `pip` (with setuptools). The full python stdlib (including `unittest`) is kept, and all `.py` sources stay readable on-device instead of `.pyc`-only. See "Installing Python packages" below for the pip/venv specifics.
+- **CLI tools**: `git`, `gh`, `rsync`, `ssh`/`scp`/`sftp` (OpenSSH client), `vi` (busybox), `nano`, `wget`, `ip`/`ifconfig`/`ping`/`nslookup`, `pip` (with setuptools), plus `bash`, `tmux`, `htop`, `strace`, `gdb`, `jq`, and more. The full python stdlib (including `unittest`) is kept, and all `.py` sources stay readable on-device instead of `.pyc`-only. See "Installing Python packages" below for the pip/venv specifics.
 
 ## Building the developer SeedSigner OS Image
 
@@ -41,81 +47,7 @@ or from a shell inside the container:
 ./build.sh --${BOARD_TYPE} --dev
 ```
 
-The image lands in `images/seedsigner_os.<branch>.${BOARD_TYPE}-dev.img`.
-
-## Quick start (macOS)
-
-Once you've built the image, this takes you from a flashed card to running the test suite and your own code on the device, over a single USB cable.
-
-### 1. Flash the image to a microSD
-
-Write `images/seedsigner_os.<branch>.<board>-dev.img` to a microSD card with Raspberry Pi Imager ("Use custom"), balenaEtcher, or `dd`, then put the card in the SeedSigner.
-
-### 2. Plug into the correct USB port
-
-The Pi Zero 2 W has **two** micro-USB ports. Connect the cable from your Mac to the **data** port — the one closer to the middle of the board (labeled `USB`) — **not** the one at the outer edge (labeled `PWR`), which is power-only. The device draws power and talks to your Mac over this one cable, so it will boot as soon as it's plugged in.
-
-### 3. Share your Mac's internet over the USB link
-
-The image appears to macOS as a USB ethernet gadget ("RNDIS/Ethernet Gadget"). Turn on Internet Sharing so the Mac hands it an IP address (and gives it internet for `git clone`/`pip`):
-
-1. System Settings → General → **Sharing** → **Internet Sharing** (click the ⓘ).
-2. **Share your connection from:** Wi-Fi.
-3. **To computers using:** check the RNDIS/Ethernet Gadget (the USB interface).
-4. Toggle **Internet Sharing** on (the indicator turns green).
-
-The dev image already has the USB ethernet gadget (`dtoverlay=dwc2` + `g_ether`) baked in, so — unlike the upstream [usb_relay.md](https://github.com/SeedSigner/seedsigner/blob/dev/docs/usb_relay.md) guide — you do **not** need to edit anything on the card.
-
-### 4. Add an SSH shortcut
-
-Add this to `~/.ssh/config` on your Mac so you can just `ssh seedsigner` — always as `root`, with the host-key fingerprint check skipped entirely and no `known_hosts` churn (handy because it's a throwaway dev box):
-
-```
-Host seedsigner seedsigner.local
-    HostName seedsigner.local
-    User root
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-```
-
-- `User root` — no need to type `root@`.
-- `StrictHostKeyChecking no` + `UserKnownHostsFile /dev/null` — never prompt to verify the fingerprint and never store it.
-- `LogLevel ERROR` — hides the "Permanently added ..." warning that would otherwise print on every connect.
-
-### 5. Connect
-
-```bash
-ssh root@seedsigner.local
-```
-
-Password: `seedsigner`. Give the device 15–30s after plugging in to boot and to bring `seedsigner.local` up. If the name doesn't resolve yet, wait a moment and retry, or find its address on the Mac with `arp -a | grep bridge100`.
-
-### 6. Clone the repo, set up the venv, and run the tests
-
-On the device:
-
-```bash
-cd /mnt/data
-git clone --recursive https://github.com/SeedSigner/seedsigner.git
-cd seedsigner
-git submodule update --init --recursive
-python3 -m venv venv
-source venv/bin/activate
-python3 -m pip install -r tests/requirements.txt
-python3 -m pip install -r l10n/requirements-l10n.txt
-python3 -m pip install -e .
-python setup.py compile_catalog
-pytest
-seedsigner restart
-```
-
-Notes:
-
-- `/mnt/data` is the persistent partition, so the checkout and venv survive reboots.
-- On this image `python3 -m venv` defaults to `--system-site-packages`, so the heavy native dependencies (Pillow, numpy, embit, pyzbar) come from the image and pip only installs the pure-Python dev/test tools into the venv.
-- `compile_catalog` builds the translation `.mo` files — skip it and the l10n tests fail.
-- `seedsigner restart` relaunches the app from your `/mnt/data/seedsigner` checkout (see [Controlling the app](#controlling-the-app)).
+The image lands in `images/seedsigner_os.<branch>.${BOARD_TYPE}-dev.img`. Once you've built it, head to [dev_workflow.md](dev_workflow.md#quick-start-macos) to flash it and start developing.
 
 ## Using the image
 
@@ -133,7 +65,7 @@ Power cycle. If you need more control (hidden SSID, enterprise auth, multiple ne
 
 ### Root password
 
-`seedsigner`. This is set in `pi02w-dev_defconfig` (`BR2_TARGET_GENERIC_ROOT_PASSWD`) and reapplied by `post-build.sh` — see the comments there if you change it, since the release rootfs-overlay's `etc/shadow` would otherwise silently overwrite it back to a locked account.
+`seedsigner`. This is set in `<board>-dev_defconfig` (`BR2_TARGET_GENERIC_ROOT_PASSWD`) and reapplied by `<board>-dev/board/post-build.sh` — see the comments there if you change it, since the release rootfs-overlay's `etc/shadow` would otherwise silently overwrite it back to a locked account.
 
 ### Finding the device / SSH
 
@@ -147,58 +79,14 @@ This works over the USB relay, wifi, and ethernet alike, and follows whatever ad
 
 The advertised name is `seedsigner` (set in `/etc/default/mdnsd`). The system hostname is `seedsigner-os` — the same as the release image, which the SeedSigner app requires (it keys OS-specific behavior, such as storing settings on the microSD and detecting card insert/removal, off the hostname).
 
-The image is **IPv4-only** — IPv6 is disabled via `ipv6.disable=1` on the kernel command line (`pi02w-dev/board/boot_cmdline.txt`). Without this the USB-relay link picks up a link-local/ULA IPv6 that `ssh root@seedsigner.local` would try first and stall on before falling back to IPv4; with IPv6 off, `seedsigner.local` resolves to the IPv4 address only and plain `ssh root@seedsigner.local` connects directly.
+The image is **IPv4-only** — IPv6 is disabled via `ipv6.disable=1` on the kernel command line (`<board>-dev/board/boot_cmdline.txt`). Without this the USB-relay link picks up a link-local/ULA IPv6 that `ssh root@seedsigner.local` would try first and stall on before falling back to IPv4; with IPv6 off, `seedsigner.local` resolves to the IPv4 address only and plain `ssh root@seedsigner.local` connects directly.
 
 ### USB relay networking
 
-Plug the Pi into a computer over USB. Within a few seconds:
+Plug the Pi into a computer over its USB OTG port (see the board table under [USB relay](#whats-added) — the Zero-family micro-USB data port or the Pi 4 USB-C port; not available on the Pi 2/3 Model B). Within a few seconds:
 
 - If the host is **not** sharing its internet connection, the Pi assigns itself `10.55.0.1` and runs a small DHCP server (`udhcpd`, range `10.55.0.2`–`10.55.0.6`), so the host auto-configures its side of the link too. Just `ssh root@10.55.0.1`.
 - If the host **is** sharing its internet connection (macOS: System Settings → General → Sharing → Internet Sharing, share to the "RNDIS/Ethernet Gadget"/USB interface), the Pi detects the host's DHCP server instead and takes a normal lease from it (typically `192.168.2.x` on macOS), giving the Pi an actual internet route for `git clone`/`pip`/etc. The lease address can change between reboots — this is exactly why `ssh root@seedsigner.local` (see above) is the easiest way in. Otherwise find the address with `network-info`, or on the host: `arp -a | grep bridge100` (macOS).
-
-### Developing on the device
-
-There are multiple ways to work on the SeedSigner code with a dev image, and you can mix them freely — either way the app runs from `/mnt/data/seedsigner`:
-
-- **A — Work directly on the device.** Clone the repo onto the device over the network and edit / commit / pull right there; `git`, editors (`vi`, `nano`), and the Python toolchain are all on the image. Good when you want a self-contained setup that doesn't depend on a host.
-- **B — Edit on your Mac, sync to the device.** Keep your working tree and your editor/IDE on your Mac and push changes to the device with `rsync` whenever you want to test. Good when you prefer your host tooling.
-
-In both cases `start.sh` runs `/mnt/data/seedsigner/src/main.py` when it exists (falling back to the embedded `/opt/src`), and uses a `venv`/`.venv` in the checkout if present — so once the code is under `/mnt/data/seedsigner`, the rest (controlling the app, tests, venvs) is identical.
-
-#### Workflow A: clone on the device
-
-```bash
-cd /mnt/data
-git clone --recursive https://github.com/SeedSigner/seedsigner.git
-```
-
-Then follow the venv/test setup in the [Quick start](#6-clone-the-repo-set-up-the-venv-and-run-the-tests). Edit in place on the device and `seedsigner restart` to pick up changes.
-
-#### Workflow B: edit on your Mac, rsync to the device
-
-Keep editing in your local checkout (e.g. `~/Source/seedsigner`) and push it to the device's `/mnt/data/seedsigner` over SSH. A ready-made helper lives at [`docs/scripts/rsync-to-seedsigner.sh`](scripts/rsync-to-seedsigner.sh) — copy it to the **root of your local seedsigner checkout** and run it from there:
-
-```bash
-cp path/to/seedsigner-os/docs/scripts/rsync-to-seedsigner.sh ~/Source/seedsigner/
-cd ~/Source/seedsigner
-./rsync-to-seedsigner.sh             # sync the working tree to the device
-./rsync-to-seedsigner.sh --restart   # ...and `seedsigner restart` afterward
-```
-
-It `rsync`s the checkout to `root@seedsigner.local:/mnt/data/seedsigner/` (override the target with the `SEEDSIGNER_HOST` / `SEEDSIGNER_USER` env vars), mirroring with `--delete` while excluding `.git/`, `venv/`, caches, screenshots, and the like. Its header comments walk through the one-time SSH-key setup so the sync is passwordless. First-time on the device you still need to create the venv and (for l10n tests) run `compile_catalog` — see the Quick start and [Running the tests](#running-the-tests--screenshot-generator).
-
-#### Controlling the app
-
-The app is managed by a pidfile-tracked service, so you don't have to hunt down and `kill` python processes. From an SSH session or the console:
-
-```bash
-seedsigner status      # running (pid N) | stopped
-seedsigner stop        # stop the app (frees the display)
-seedsigner start       # start it (detached; survives SSH logout)
-seedsigner restart     # stop + start -- pick up code changes
-```
-
-(`seedsigner` is a thin wrapper over `/etc/init.d/S02seedsigner`, which is what starts the app at boot.) So the edit loop is just: edit your tree under `/mnt/data/seedsigner`, then `seedsigner restart`. To run the app in the foreground instead (to watch its output/tracebacks live): `seedsigner stop`, then `cd /mnt/data/seedsigner/src && python3 main.py`.
 
 ### Installing Python packages
 
@@ -216,7 +104,7 @@ python3 -m venv /mnt/data/seedsigner/venv
 python3 -m pip install <package>       # installs into the active venv
 ```
 
-(Upstream CPython defaults are the opposite — isolated, with a bundled pip; the defaults are flipped in `pi02w-dev/board/post-build.sh` because neither upstream default is usable here. A `venv` at `/mnt/data/seedsigner/venv` is also what `start.sh` uses to launch the app — see above.)
+(Upstream CPython defaults are the opposite — isolated, with a bundled pip; the defaults are flipped in `<board>-dev/board/post-build.sh` because neither upstream default is usable here. A `venv` at `/mnt/data/seedsigner/venv` is also what `start.sh` uses to launch the app — see [Developing on the device](dev_workflow.md#developing-on-the-device).)
 
 ### Example: testing a newer version of a baked-in library (embit)
 
@@ -254,30 +142,6 @@ Notes:
 
 - If pip says `Requirement already satisfied` (PyPI's latest matches the baked-in version), force it into the venv with an explicit version or `--ignore-installed`: `python3 -m pip install 'embit==0.9.0'`.
 - This shadowing trick only works for **pure-Python** packages. One with a compiled C extension (`Pillow`, `numpy`, ...) can't be pip-built on the device (no compiler), so a newer version of those has to go through a Buildroot image rebuild — bump the version + hash in `opt/external-packages/python-<pkg>/`.
-
-### Running the tests / screenshot generator
-
-The test tools (`pytest`, `pytest-cov`, `coverage`) are **not** in the image; install them from `tests/requirements.txt`. The suite also needs the app's runtime dependencies (PIL/Pillow, numpy, embit, pyzbar, the `seedsigner` package), which **are** in the image and reachable because `python3 -m venv` includes the system site-packages by default here (without that you'd get `ModuleNotFoundError: No module named 'PIL'` at collection time):
-
-```bash
-cd /mnt/data/seedsigner
-python3 -m venv venv                # defaults to --system-site-packages here
-. venv/bin/activate
-python3 -m pip install -r tests/requirements.txt   # pytest 7.4.2, pytest-cov, coverage
-```
-
-Sanity-check that the image's packages are visible in the venv, then run:
-
-```bash
-python3 -c "import PIL, numpy, embit; print('PIL', PIL.__version__)"
-pytest                                              # full suite from the repo root
-pytest tests/screenshot_generator/generator.py --locale es   # screenshots
-```
-
-Notes:
-
-- **Use the pinned `tests/requirements.txt`**, not a bare `pip install pytest`. A bare install pulls the newest pytest (9.x), whose collection/config behavior differs from the pinned 7.4.2 the suite targets; `tests/ requirements.txt` gets the intended version (and downgrades pytest if a newer one is already in the venv).
-- `coverage` has no `armv7l` wheel, so pip builds it from source. With no compiler it falls back to coverage's pure-Python tracer automatically — `pytest --cov` still works, just measures a bit slower.
 
 ### Clock
 

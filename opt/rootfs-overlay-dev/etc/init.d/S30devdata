@@ -76,8 +76,13 @@ start() {
 	# First-boot: grow the partition + filesystem to fill the card (before mount).
 	grow_data_partition
 
+	# Always create the mountpoint so it exists even when the data partition is
+	# missing (e.g. a kernel without the SD controller's regulators, where
+	# /dev/mmcblk0p2 never appears) -- makes the failure obvious rather than a
+	# silently absent /mnt/data.
+	mkdir -p "$DATA_MNT"
+
 	if [ -b "$DATA_DEV" ]; then
-		mkdir -p "$DATA_MNT"
 		if mount -t ext4 "$DATA_DEV" "$DATA_MNT"; then
 			echo "devdata: mounted $DATA_DEV at $DATA_MNT"
 		else
