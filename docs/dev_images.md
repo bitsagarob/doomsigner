@@ -77,7 +77,15 @@ ssh root@seedsigner.local
 
 This works over the USB relay, wifi, and ethernet alike, and follows whatever address DHCP hands out (mdnsd re-checks every 10s). macOS and Linux (with nss-mdns/avahi) resolve `.local` out of the box; on Windows it needs Bonjour installed. If `.local` resolution isn't available, run `network-info` from the HDMI console (or check your router/DHCP leases) and `ssh root@<ip>` instead.
 
-The advertised name is `seedsigner` (set in `/etc/default/mdnsd`). The system hostname is `seedsigner-os` — the same as the release image, which the SeedSigner app requires (it keys OS-specific behavior, such as storing settings on the microSD and detecting card insert/removal, off the hostname).
+The advertised name is `seedsigner` (set in `/etc/default/mdnsd`), so the ssh target above is identical on dev and release images. The system hostname, however, is `seedsigner-dev` (release images use `seedsigner-os`) — mdnsd is passed `-H seedsigner` explicitly so the advertised name doesn't follow the hostname.
+
+The hostname difference is deliberate but it is **not** cosmetic: the SeedSigner app keys OS-specific behavior off `os.uname()[1]`, comparing it against the literal `"seedsigner-os"` (`Settings.SEEDSIGNER_OS` in `src/seedsigner/models/settings.py`). On a dev image those checks take the "not running on SeedSigner OS" branch, which means:
+
+- **Settings persist next to the app, not at the release path.** `Settings.SETTINGS_FILENAME` falls back from `/mnt/microsd/settings.json` to a relative `settings.json`, which lands in the app's working directory — `/mnt/data/seedsigner/` — on the same microSD card. Settings still survive reboots; they're just in a different file.
+- **microSD insert/removal detection doesn't run.** The polling thread in `hardware/microsd.py` is OS-gated, so the Persistent Settings option keeps offering "Enabled" and never swaps in the "Insert SD card to enable" help text. This costs nothing in practice: in dev mode the app itself runs from `/mnt/data` on the card, so pulling the card stops the app outright.
+- **Version/update checks take their non-OS path** (six call sites in `helpers/version.py`).
+
+The trade-off is testing fidelity — these code paths differ from what ships, so exercise them on a release image before tagging. If you need a dev board to behave exactly like release, set `BR2_TARGET_GENERIC_HOSTNAME="seedsigner-os"` in the board's `*-dev_defconfig` and rebuild.
 
 The image is **IPv4-only** — IPv6 is disabled via `ipv6.disable=1` on the kernel command line (`<board>-dev/board/boot_cmdline.txt`). Without this the USB-relay link picks up a link-local/ULA IPv6 that `ssh root@seedsigner.local` would try first and stall on before falling back to IPv4; with IPv6 off, `seedsigner.local` resolves to the IPv4 address only and plain `ssh root@seedsigner.local` connects directly.
 
