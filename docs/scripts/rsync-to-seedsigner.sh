@@ -46,9 +46,20 @@ for arg in "$@"; do
     esac
 done
 
+# mention about .git/ handling: the app's Version class parses a minimal set of .git/ files
+# on-device (HEAD, config, refs) to display the current branch/tag/commit.
+# Include just those; the trailing '.git/**' exclude drops everything else
+# (objects, hooks, index, etc.). Order matters: rsync filters are first-match-wins.
+
 rsync -avz --delete \
     --exclude 'rsync-to-seedsigner.sh' \
-    --exclude '.git/' \
+    --include '.git/' \
+    --include '.git/HEAD' \
+    --include '.git/config' \
+    --include '.git/refs/' \
+    --include '.git/refs/heads/***' \
+    --include '.git/refs/tags/***' \
+    --exclude '.git/**' \
     --exclude '.DS_Store' \
     --exclude '__pycache__/' \
     --exclude '*.pyc' \

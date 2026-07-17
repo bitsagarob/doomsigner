@@ -192,7 +192,9 @@ cd ~/Source/seedsigner
 ./rsync-to-seedsigner.sh --restart   # ...and `seedsigner restart` afterward
 ```
 
-It `rsync`s the checkout to `root@seedsigner.local:/mnt/data/seedsigner/` (override the target with the `SEEDSIGNER_HOST` / `SEEDSIGNER_USER` env vars), mirroring with `--delete` while excluding `.git/`, `venv/`, caches, screenshots, and the like. Its header comments walk through the one-time SSH-key setup so the sync is passwordless. First-time on the device you still need to create the venv and (for l10n tests) run `compile_catalog` — see the Quick start and [Running the tests](#running-the-tests--screenshot-generator).
+It `rsync`s the checkout to `root@seedsigner.local:/mnt/data/seedsigner/` (override the target with the `SEEDSIGNER_HOST` / `SEEDSIGNER_USER` env vars), mirroring with `--delete` while excluding `venv/`, caches, screenshots, and the like. Its header comments walk through the one-time SSH-key setup so the sync is passwordless.
+
+Most of `.git/` is excluded too, but a small subset (`HEAD`, `config`, and the loose refs under `refs/heads` and `refs/tags`) *is* synced: the app's `Version` class parses those on-device to show the current branch/tag/commit. First-time on the device you still need to create the venv and (for l10n tests) run `compile_catalog` — see the Quick start and [Running the tests](#running-the-tests--screenshot-generator).
 
 ### Controlling the app
 
