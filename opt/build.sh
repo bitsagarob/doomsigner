@@ -87,6 +87,13 @@ compile_translations_and_fonts() {
   # remove original font files
   rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
 
+  # Write src/seedsigner/version.json. Must run before download_app_repo removes
+  # .git and tools/ below. Runs here, inside the venv, because write_versionfile.py
+  # imports seedsigner.helpers.version, which `pip install -e .` above provides.
+  export SEEDSIGNER_OS_BUILDER=1
+  python3 tools/write_versionfile.py || exit
+  cat src/seedsigner/version.json
+
   cd -
   deactivate
 
