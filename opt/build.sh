@@ -87,16 +87,38 @@ compile_translations_and_fonts() {
   # remove original font files
   rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
 
-  # Write src/seedsigner/version.json. Must run before download_app_repo removes
-  # .git and tools/ below. Runs here, inside the venv, because write_versionfile.py
-  # imports seedsigner.helpers.version, which `pip install -e .` above provides.
-  export SEEDSIGNER_OS_BUILDER=1
-  python3 tools/write_versionfile.py || exit
-  cat src/seedsigner/version.json
-
   cd -
   deactivate
 
+}
+
+write_version_json() {
+  # Writes ${rootfs_overlay}/opt/src/seedsigner/version.json, which SeedSigner OS reads
+  # at runtime. A missing or incomplete file makes the app raise at the splash screen,
+  # so failures here are fatal.
+  # Must run while .git/ and tools/ are still present (delete_unnecessary_files drops them).
+  app_dir="${rootfs_overlay}/opt"
+
+  if [ -f "${app_dir}/src/seedsigner/version.json" ]; then
+    # Already written: either by an earlier build_image call (--all) or by the caller.
+    echo "version.json already present, leaving as-is"
+    cat "${app_dir}/src/seedsigner/version.json"
+    return
+  fi
+
+  if [ ! -f "${app_dir}/tools/write_versionfile.py" ]; then
+    echo "ERROR: ${app_dir}/tools/write_versionfile.py not found; cannot write version.json" >&2
+    exit 1
+  fi
+
+  # In CI the overlay is a bind-mounted host checkout owned by a different uid than the
+  # root user in this container. git refuses such repos ("dubious ownership") and
+  # version.py silently discards the error, yielding a version.json that bricks boot.
+  git config --global --add safe.directory "$(cd "${app_dir}" && pwd)"
+
+  # PYTHONPATH=src is enough; write_versionfile.py's imports are stdlib-only.
+  export SEEDSIGNER_OS_BUILDER=1
+  (cd "${app_dir}" && PYTHONPATH=src python3 tools/write_versionfile.py) || exit
 }
 
 download_app_repo() {
@@ -119,8 +141,12 @@ download_app_repo() {
   fi
 
   compile_translations_and_fonts
+}
 
-  # Delete unnecessary files to save space
+delete_unnecessary_files() {
+  # Delete unnecessary files to save space. Runs independently of download_app_repo so
+  # that --skip-repo builds (CI, which populates rootfs-overlay/opt itself) are trimmed
+  # too. Must run after write_version_json, which needs .git/ and tools/.
   # folders
   rm -rf ${rootfs_overlay}/opt/.github
   rm -rf ${rootfs_overlay}/opt/docker
@@ -177,6 +203,11 @@ build_image() {
   if [ "${3}" != "skip-repo" ]; then
     download_app_repo
   fi
+
+  # Both run unconditionally so --skip-repo builds get the same treatment. Order
+  # matters: write_version_json needs the .git/ and tools/ that the other removes.
+  write_version_json
+  delete_unnecessary_files
 
   # Setup external tree
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
