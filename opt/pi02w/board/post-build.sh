@@ -53,6 +53,25 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
 rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
 rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip
 
+# ### Cross-arch reproducibility normalization
+# ### Two files record the *build machine* architecture, which makes images built on
+# ### an aarch64 host differ from x86_64-host builds:
+# ###   - libstdc++: nothing in the image links against it, and its .text differs by build
+# ###     host (GCC 13.3 orders two spill slots in from_chars differently) => remove it.
+# ###   - python sysconfigdata: embeds the configure build triplet; only loaded via
+# ###     sysconfig.get_config_var(), which nothing on the device calls => remove it.
+# ### (numpy's __config__.py is handled at the source instead: see the python-numpy patch
+# ###  in BR2_GLOBAL_PATCH_DIR, opt/patches/python-numpy/.)
+
+# Remove libstdc++ (unused: no binary in the image links against it)
+rm -f ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32-gdb.py
+
+# Remove python sysconfigdata (build-host metadata; unused at runtime)
+rm -f ${TARGET_DIR}/usr/lib/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py
+
 # ### Image slimming: files verified unused by the seedsigner app
 # ### (dependency-closure scan of every ELF + import scan of every shipped pyc)
 
