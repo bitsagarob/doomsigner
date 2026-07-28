@@ -53,6 +53,25 @@ rm -rf ${TARGET_DIR}/usr/lib/python3/turtledemo
 rm -rf ${TARGET_DIR}/usr/lib/python3/unittest
 rm -rf ${TARGET_DIR}/usr/lib/python3/ensurepip
 
+# ### Cross-arch reproducibility normalization
+# ### Two files record the *build machine* architecture, which makes images built on
+# ### an aarch64 host differ from x86_64-host builds:
+# ###   - libstdc++: nothing in the image links against it, and its .text differs by build
+# ###     host (GCC 13.3 orders two spill slots in from_chars differently) => remove it.
+# ###   - python sysconfigdata: embeds the configure build triplet; only loaded via
+# ###     sysconfig.get_config_var(), which nothing on the device calls => remove it.
+# ### (numpy's __config__.py is handled at the source instead: see the python-numpy patch
+# ###  in BR2_GLOBAL_PATCH_DIR, opt/patches/python-numpy/.)
+
+# Remove libstdc++ (unused: no binary in the image links against it)
+rm -f ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6 \
+      ${TARGET_DIR}/usr/lib/libstdc++.so \
+      ${TARGET_DIR}/usr/lib/libstdc++.so.6.0.32-gdb.py
+
+# Remove python sysconfigdata (build-host metadata; unused at runtime)
+rm -f ${TARGET_DIR}/usr/lib/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py
+
 # ### Reproducibility experimentation
 # ### Remove all pyc files I can seem to make reproducible and keep the py versions
 
@@ -90,7 +109,6 @@ find ${TARGET_DIR}/usr/lib/python3.12 -name '*.py' \
 	-not -path "*/python3.12/site-packages/numpy/lib/recfunctions.py" \
 	-not -path "*/python3.12/site-packages/numpy/lib/stride_tricks.py" \
 	-not -path "*/python3.12/traceback.py" \
-	-not -path "*/python3.12/_sysconfigdata__linux_arm-linux-gnueabihf.py" \
 	-print0 | \
 	xargs -0 --no-run-if-empty rm -f
 
