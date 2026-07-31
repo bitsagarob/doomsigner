@@ -49,6 +49,24 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/w -w /w \
   sh -c "pip install -q pytest pillow && python -m pytest -q"
 ```
 
+## Browser harness
+
+`web/` runs the real modules under Pyodide, so the game can be played and the
+unlock exercised without a Pi. Pyodide ships Pillow, so `display.py` renders in
+the browser too and the output is pixel-identical to the device.
+
+```sh
+python3 -m http.server 8899 --directory boot-game
+# then open http://127.0.0.1:8899/web/
+```
+
+Arrow keys steer, KEY1/KEY2/KEY3 (or `1`, `2`, `3`) unlock.
+
+`web/session.py` is the harness equivalent of `boot.py`, because `boot.py` and
+`input.py` import RPi.GPIO and SeedSigner and cannot load under Pyodide. So the
+harness covers the game, the unlock and the rendering, but *not* the button
+polling loop or the `execv` handoff. Those are only exercised on real hardware.
+
 ## Building an image
 
 `stage.sh` copies the runtime modules into the rootfs overlay. Tests and

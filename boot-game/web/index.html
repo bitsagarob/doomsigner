@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>boot-game harness</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.25rem;
+    background: #111; color: #ddd;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  #screen {
+    width: 480px; height: 480px;
+    image-rendering: pixelated;
+    border-radius: 6px;
+    box-shadow: 0 0 0 10px #1c1c1c, 0 0 0 11px #2c2c2c;
+  }
+  #status { min-height: 1.5em; color: #888; }
+  #status.ready { color: #0f0; }
+  .keys { display: flex; gap: .5rem; }
+  button {
+    font: inherit; color: #ddd; background: #222;
+    border: 1px solid #444; border-radius: 4px; padding: .4rem .9rem; cursor: pointer;
+  }
+  button:hover { background: #2c2c2c; }
+  .hint { color: #666; max-width: 480px; text-align: center; }
+  #handoff { color: #ff9f0a; min-height: 1.5em; font-weight: bold; }
+</style>
+</head>
+<body>
+  <canvas id="screen" width="240" height="240"></canvas>
+  <div id="status">loading Pyodide…</div>
+  <div class="keys">
+    <button data-key="KEY1">KEY1</button>
+    <button data-key="KEY2">KEY2</button>
+    <button data-key="KEY3">KEY3</button>
+  </div>
+  <div id="handoff"></div>
+  <p class="hint">
+    Arrow keys steer. KEY1 &rarr; KEY2 &rarr; KEY3 unlocks.<br>
+    Running the real <code>bootgame</code> modules under Pyodide, rendered by the
+    same <code>display.py</code> the device uses.
+  </p>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js"></script>
+<script>
+const MODULES = ["__init__", "keys", "game", "unlock", "display"];
+const TICK_MS = 180;              // mirrors TICK_SECONDS in bootgame.boot
+const GAME_OVER_PAUSE_MS = 1500;  // mirrors GAME_OVER_PAUSE_SECONDS
+const SIZE = 240;
+
+const KEYMAP = {
+  ArrowUp: "UP", ArrowDown: "DOWN", ArrowLeft: "LEFT", ArrowRight: "RIGHT",
+  Enter: "PRESS", "1": "KEY1", "2": "KEY2", "3": "KEY3",
+};
+
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+const status = document.getElementById("status");
+const handoff = document.getElementById("handoff");
+
+let session = null;
+let timer = null;
+let paused = false;
+
+function paint(rgb) {
+  const frame = ctx.createImageData(SIZE, SIZE);
+  for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
+    frame.data[dst] = rgb[src];
+    frame.data[dst + 1] = rgb[src + 1];
+    frame.data[dst + 2] = rgb[src + 2];
+    frame.data[dst + 3] = 255;
+  }
+  ctx.putImageData(frame, 0, 0);
+}
+
+function press(name) {
+  if (!session || paused) return;
+  if (session.press(name)) unlock();
+}
+
+function unlock() {
+  clearInterval(timer);
+  paused = true;
+  handoff.textContent = "unlocked → os.execv → SeedSigner starts here";
+  status.textContent = "on the device this process is now replaced by the wallet";
+}
+
+function step() {
+  if (paused) return;
+  paint(session.tick());
+  if (session.game_over) {
+    paused = true;
+    setTimeout(() => { session.reset(); paused = false; }, GAME_OVER_PAUSE_MS);
+  }
+}
+
+async function boot() {
+  const pyodide = await loadPyodide();
+  status.textContent = "loading Pillow…";
+  await pyodide.loadPackage("Pillow");
+
+  status.textContent = "loading bootgame…";
+  pyodide.FS.mkdirTree("/app/bootgame");
+  for (const name of MODULES) {
+    const response = await fetch(`../src/bootgame/${name}.py`);
+    if (!response.ok) throw new Error(`cannot fetch ${name}.py (${response.status})`);
+    pyodide.FS.writeFile(`/app/bootgame/${name}.py`, await response.text());
+  }
+  pyodide.FS.writeFile("/app/session.py", await (await fetch("session.py")).text());
+
+  pyodide.runPython(`
+import sys
+sys.path.insert(0, "/app")
+from session import WebSession
+session = WebSession(${SIZE}, ${SIZE})
+`);
+  session = pyodide.globals.get("session");
+
+  paint(session.frame());
+  status.textContent = "ready";
+  status.className = "ready";
+  timer = setInterval(step, TICK_MS);
+}
+
+document.addEventListener("keydown", (event) => {
+  const name = KEYMAP[event.key];
+  if (!name) return;
+  event.preventDefault();
+  press(name);
+});
+
+document.querySelectorAll("button[data-key]").forEach((button) => {
+  button.addEventListener("click", () => press(button.dataset.key));
+});
+
+boot().catch((error) => {
+  status.textContent = `failed: ${error.message}`;
+  console.error(error);
+});
+</script>
+</body>
+</html>
