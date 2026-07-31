@@ -11,13 +11,11 @@ from bootgame.keys import Key
 
 logger = logging.getLogger(__name__)
 
+# The three side buttons, left to right. None of them steer the snake, so the
+# sequence cannot be triggered by ordinary play, and it reads clearly on camera.
 DEFAULT_SEQUENCE = [
-    Key.UP,
-    Key.UP,
-    Key.DOWN,
-    Key.DOWN,
-    Key.LEFT,
-    Key.RIGHT,
+    Key.KEY1,
+    Key.KEY2,
     Key.KEY3,
 ]
 
