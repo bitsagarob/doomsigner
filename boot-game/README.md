@@ -67,6 +67,28 @@ Arrow keys steer, KEY1/KEY2/KEY3 (or `1`, `2`, `3`) unlock.
 harness covers the game, the unlock and the rendering, but *not* the button
 polling loop or the `execv` handoff. Those are only exercised on real hardware.
 
+## Emulator
+
+`emulator/` runs the game against the desktop SeedSigner emulator, headless in a
+container. The staged tree deliberately mirrors the device (app at `/opt/src`,
+game at `/usr/local/bootgame`, a `/usr/bin/python3` for `execv` to find), so the
+exact command line from `start.sh` is what gets exercised.
+
+```sh
+docker build -t bootgame-emulator boot-game/emulator/
+./boot-game/emulator/test.sh
+```
+
+It asserts that entering KEY1/KEY2/KEY3 replaces the process with `main.py` at
+the same pid, which is the `execv` handoff actually happening. Because the crash
+fallback *also* ends in `main.py`, the test additionally requires that the game
+did not fail, and `negative-control.sh` checks the unlock does not fire on its
+own. Without both, a green handoff test would prove nothing.
+
+The emulator lags upstream, so `run.sh` applies three small compatibility
+patches to the staged copy. It is pinned against SeedSigner 0.8.7 for this
+reason; `dev` has moved past what it supports.
+
 ## Building an image
 
 `stage.sh` copies the runtime modules into the rootfs overlay. Tests and
@@ -75,7 +97,7 @@ packaging stay here and never ship to the device.
 ```sh
 ./boot-game/stage.sh
 export BOARD_TYPE=pi0
-SS_ARGS="--$BOARD_TYPE --app-commit-id=1fb2956322ea978428a6a96b955baa93e965c877" \
+SS_ARGS="--$BOARD_TYPE --app-branch=0.8.7" \
   docker compose up --force-recreate --build
 ```
 
