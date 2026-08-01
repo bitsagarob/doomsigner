@@ -1,5 +1,4 @@
 build/
-frames/
+frames*/
 wad/
-frames-device/
 src/ss_panel_config.h
