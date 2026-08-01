@@ -83,8 +83,14 @@ static void hard_reset(void)
 
 static int set_window(void)
 {
-    const uint8_t columns[4] = { 0x00, 0x00, 0x00, SS_PANEL_W - 1 };
-    const uint8_t rows[4] = { 0x00, 0x00, 0x00, SS_PANEL_H - 1 };
+    /* Coordinates are 16 bit. A 320 wide panel does not fit in the low byte,
+       which is easy to miss when the only panel you have tried is 240 wide. */
+    const uint8_t columns[4] = {
+        0x00, 0x00, (uint8_t)((SS_PANEL_W - 1) >> 8), (uint8_t)((SS_PANEL_W - 1) & 0xFF),
+    };
+    const uint8_t rows[4] = {
+        0x00, 0x00, (uint8_t)((SS_PANEL_H - 1) >> 8), (uint8_t)((SS_PANEL_H - 1) & 0xFF),
+    };
 
     if (write_command(0x2A, columns, 4) < 0) return -1;
     if (write_command(0x2B, rows, 4) < 0) return -1;
@@ -120,13 +126,30 @@ static int init_spi(void)
 
     hard_reset();
 
-    for (size_t i = 0; i < SS_PANEL_INIT_LEN; i++) {
-        const ss_panel_cmd_t *entry = &SS_PANEL_INIT[i];
-        if (write_command(entry->command, entry->data, entry->length) < 0) {
-            fprintf(stderr, "doom: display init failed at command 0x%02X\n", entry->command);
-            return -1;
+    /* Some drivers run the sequence more than once. Theirs says "yes, twice,
+       once is not always enough", so match that rather than second-guess it. */
+    for (int pass = 0; pass < SS_PANEL_INIT_REPEAT; pass++) {
+        for (size_t i = 0; i < SS_PANEL_INIT_LEN; i++) {
+            const ss_panel_cmd_t *entry = &SS_PANEL_INIT[i];
+            if (write_command(entry->command, entry->data, entry->length) < 0) {
+                fprintf(stderr, "doom: display init failed at command 0x%02X\n", entry->command);
+                return -1;
+            }
+            if (entry->delay_ms) {
+                sleep_ms(entry->delay_ms);
+            }
         }
     }
+
+#if SS_PANEL_MADCTL
+    /* Rotate on the controller, not in software: the panel is natively portrait
+       and this costs nothing per frame. */
+    const uint8_t madctl = SS_PANEL_MADCTL;
+    if (write_command(0x36, &madctl, 1) < 0) {
+        fprintf(stderr, "doom: could not set display rotation\n");
+        return -1;
+    }
+#endif
 
     sleep_ms(120); /* SLPOUT needs time before the first frame */
     return 0;

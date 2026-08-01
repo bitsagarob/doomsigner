@@ -76,11 +76,22 @@ static void test_scale_letterboxes_and_centres(void)
     }
     ss_scale_to_565(src, 320, 200, dst);
 
-    /* 320x200 into 240x240 gives 240x150, so 45 blank rows top and bottom. */
-    CHECK(dst[0] == 0x0000);
-    CHECK(dst[(size_t)44 * SS_PANEL_W + 120] == 0x0000);
-    CHECK(dst[(size_t)120 * SS_PANEL_W + 120] == 0xFFFF);
-    CHECK(dst[(size_t)239 * SS_PANEL_W + 120] == 0x0000);
+    /* Derive the expected bars from the panel, since the panel is generated.
+       240x240 letterboxes heavily; 320x240 fits DOOM almost exactly. */
+    const int scale_x = (SS_PANEL_W << 16) / 320;
+    const int scale_y = (SS_PANEL_H << 16) / 200;
+    const int scale = scale_x < scale_y ? scale_x : scale_y;
+    const int out_h = (200 * scale) >> 16;
+    const int bar = (SS_PANEL_H - out_h) / 2;
+    const int centre_x = SS_PANEL_W / 2;
+
+    CHECK(dst[(size_t)(SS_PANEL_H / 2) * SS_PANEL_W + centre_x] == 0xFFFF);
+
+    if (bar > 0) {
+        CHECK(dst[centre_x] == 0x0000);
+        CHECK(dst[(size_t)(bar - 1) * SS_PANEL_W + centre_x] == 0x0000);
+        CHECK(dst[(size_t)(SS_PANEL_H - 1) * SS_PANEL_W + centre_x] == 0x0000);
+    }
 }
 
 static void test_scale_converts_colour(void)
