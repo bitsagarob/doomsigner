@@ -39,3 +39,11 @@ void ss_scale_to_565(const uint32_t *src, int src_w, int src_h, uint16_t *dst)
         }
     }
 }
+
+void ss_pack_wire(const uint16_t *frame, uint8_t *out)
+{
+    for (int i = 0; i < SS_PANEL_W * SS_PANEL_H; i++) {
+        out[i * 2] = (uint8_t)(frame[i] >> 8);
+        out[i * 2 + 1] = (uint8_t)(frame[i] & 0xFF);
+    }
+}

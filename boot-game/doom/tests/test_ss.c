@@ -104,6 +104,19 @@ static void test_scale_survives_a_degenerate_source(void)
     CHECK(dst[0] == 0x0000);
 }
 
+static void test_wire_packing_is_big_endian(void)
+{
+    static uint16_t frame[SS_PANEL_W * SS_PANEL_H];
+    static uint8_t wire[SS_PANEL_W * SS_PANEL_H * 2];
+
+    frame[0] = 0xA279;
+    ss_pack_wire(frame, wire);
+
+    /* The ST7789 wants the high byte first, whatever the host's endianness. */
+    CHECK(wire[0] == 0xA2);
+    CHECK(wire[1] == 0x79);
+}
+
 int main(void)
 {
     test_unlock_completes();
@@ -113,6 +126,7 @@ int main(void)
     test_scale_letterboxes_and_centres();
     test_scale_converts_colour();
     test_scale_survives_a_degenerate_source();
+    test_wire_packing_is_big_endian();
 
     printf("%d checks passed\n", checks);
     return 0;

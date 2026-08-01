@@ -18,7 +18,9 @@ DOOM_UNITS = dummy am_map doomdef doomstat dstrings d_event d_items d_iwad \
              z_zone w_file_stdc i_input i_video doomgeneric
 
 DOOM_SRCS := $(addprefix $(DG)/, $(addsuffix .c, $(DOOM_UNITS)))
-OUR_SRCS := src/ss_video.c src/ss_unlock.c src/dg_headless.c
+HEADLESS_SRCS := src/ss_video.c src/ss_unlock.c src/dg_headless.c
+DEVICE_SRCS := src/ss_video.c src/ss_unlock.c src/ss_gpio.c src/ss_display.c \
+               src/ss_input.c src/dg_seedsigner.c
 
 CFLAGS += -std=gnu99 -O2 -I$(DG) -Isrc \
           -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE \
@@ -26,7 +28,7 @@ CFLAGS += -std=gnu99 -O2 -I$(DG) -Isrc \
           -Wno-implicit-function-declaration
 LDLIBS += -lm
 
-$(OUT)/doom-headless: $(DOOM_SRCS) $(OUR_SRCS)
+$(OUT)/doom-headless: $(DOOM_SRCS) $(HEADLESS_SRCS)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -43,3 +45,22 @@ test: $(OUT)/test-ss
 	./$(OUT)/test-ss
 
 .PHONY: test
+
+# The device target is built into the image by buildroot. Building it here is a
+# compile check only: it needs real GPIO and SPI to actually run.
+$(OUT)/doom-seedsigner: $(DOOM_SRCS) $(DEVICE_SRCS)
+	@mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+check: $(OUT)/doom-seedsigner
+	@echo "device target compiles"
+
+.PHONY: check
+
+$(OUT)/ss-convert: src/ss_video.c tools/ss_convert.c
+	@mkdir -p $(OUT)
+	$(CC) -std=gnu99 -O2 -Isrc -Wall -Wextra -o $@ $^
+
+tools: $(OUT)/ss-convert
+
+.PHONY: tools

@@ -1,0 +1,59 @@
+name: boot-game
+
+on:
+  push:
+    branches: [boot-game, doom]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The DOOM display driver is transcribed from SeedSigner's own ST7789.py.
+      # Checking it out lets the conformance tests run instead of skipping.
+      - uses: actions/checkout@v4
+        with:
+          repository: SeedSigner/seedsigner
+          ref: "0.8.7"
+          path: seedsigner-app
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pytest pillow==10.3.0
+
+      - run: python -m pytest -q
+        working-directory: boot-game
+        env:
+          PYTHONPATH: src:tests
+          SEEDSIGNER_APP: ${{ github.workspace }}/seedsigner-app
+
+  doom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ozkl/doomgeneric
+          path: doomgeneric-src
+
+      - name: unit tests
+        run: make test DG=${{ github.workspace }}/doomgeneric-src/doomgeneric
+        working-directory: boot-game/doom
+
+      - name: device target compiles
+        run: make check DG=${{ github.workspace }}/doomgeneric-src/doomgeneric
+        working-directory: boot-game/doom
+
+      - name: headless target builds and runs
+        run: |
+          make DG=${{ github.workspace }}/doomgeneric-src/doomgeneric
+          ./fetch-wad.sh
+          SS_OUT_DIR=/tmp SS_MAX_FRAMES=200 SS_DUMP_EVERY=199 \
+            ./build/doom-headless -iwad wad/freedoom1.wad
+        working-directory: boot-game/doom
