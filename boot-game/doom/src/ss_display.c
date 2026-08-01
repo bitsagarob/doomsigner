@@ -10,11 +10,9 @@
 #include <unistd.h>
 
 #include "ss_gpio.h"
-#include "ss_pins.h"
-#include "ss_st7789_init.h"
+#include "ss_panel_config.h"
 #include "ss_video.h"
 
-#define SPI_DEVICE "/dev/spidev0.0"
 #define SPI_SPEED_HZ 40000000
 
 /*
@@ -107,9 +105,9 @@ static int init_spi(void)
     ss_gpio_output(SS_PIN_BL);
     ss_gpio_write(SS_PIN_BL, 1);
 
-    spi_fd = open(SPI_DEVICE, O_RDWR);
+    spi_fd = open(SS_SPI_DEVICE, O_RDWR);
     if (spi_fd < 0) {
-        fprintf(stderr, "doom: cannot open %s\n", SPI_DEVICE);
+        fprintf(stderr, "doom: cannot open %s\n", SS_SPI_DEVICE);
         return -1;
     }
 
@@ -122,8 +120,8 @@ static int init_spi(void)
 
     hard_reset();
 
-    for (size_t i = 0; i < SS_ST7789_INIT_LEN; i++) {
-        const ss_st7789_cmd_t *entry = &SS_ST7789_INIT[i];
+    for (size_t i = 0; i < SS_PANEL_INIT_LEN; i++) {
+        const ss_panel_cmd_t *entry = &SS_PANEL_INIT[i];
         if (write_command(entry->command, entry->data, entry->length) < 0) {
             fprintf(stderr, "doom: display init failed at command 0x%02X\n", entry->command);
             return -1;

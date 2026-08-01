@@ -4,6 +4,12 @@
 DG ?= $(HOME)/apps/doomgeneric-src/doomgeneric
 OUT ?= build
 
+# The panel configuration is generated from SeedSigner's own driver and pin map
+# rather than transcribed. PROFILE applies to forks shipping io_config.json.
+SEEDSIGNER_APP ?= $(HOME)/apps/seedsigner-app
+PROFILE ?=
+PANEL_CONFIG := src/ss_panel_config.h
+
 # Upstream's explicit source list, which deliberately omits the SDL sound and
 # music backends. Their platform entry point is replaced by ours.
 DOOM_UNITS = dummy am_map doomdef doomstat dstrings d_event d_items d_iwad \
@@ -28,18 +34,24 @@ CFLAGS += -std=gnu99 -O2 -I$(DG) -Isrc \
           -Wno-implicit-function-declaration
 LDLIBS += -lm
 
-$(OUT)/doom-headless: $(DOOM_SRCS) $(HEADLESS_SRCS)
+$(PANEL_CONFIG): tools/gen_panel_config.py
+	python3 tools/gen_panel_config.py --app "$(SEEDSIGNER_APP)" \
+	  $(if $(PROFILE),--profile $(PROFILE),) --out $@
+
+panel-config: $(PANEL_CONFIG)
+
+$(OUT)/doom-headless: $(PANEL_CONFIG) $(DOOM_SRCS) $(HEADLESS_SRCS)
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
 clean:
-	rm -rf $(OUT)
+	rm -rf $(OUT) $(PANEL_CONFIG)
 
-.PHONY: clean
+.PHONY: clean panel-config
 
-$(OUT)/test-ss: src/ss_video.c src/ss_unlock.c tests/test_ss.c
+$(OUT)/test-ss: $(PANEL_CONFIG) src/ss_video.c src/ss_unlock.c tests/test_ss.c
 	@mkdir -p $(OUT)
-	$(CC) -std=gnu99 -O2 -Isrc -Wall -Wextra -o $@ $^ -lm
+	$(CC) -std=gnu99 -O2 -Isrc -Wall -Wextra -o $@ $(filter %.c,$^) -lm
 
 test: $(OUT)/test-ss
 	./$(OUT)/test-ss
@@ -48,18 +60,18 @@ test: $(OUT)/test-ss
 
 # The device target is built into the image by buildroot. Building it here is a
 # compile check only: it needs real GPIO and SPI to actually run.
-$(OUT)/doom-seedsigner: $(DOOM_SRCS) $(DEVICE_SRCS)
+$(OUT)/doom-seedsigner: $(PANEL_CONFIG) $(DOOM_SRCS) $(DEVICE_SRCS)
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
 check: $(OUT)/doom-seedsigner
 	@echo "device target compiles"
 
 .PHONY: check
 
-$(OUT)/ss-convert: src/ss_video.c tools/ss_convert.c
+$(OUT)/ss-convert: $(PANEL_CONFIG) src/ss_video.c tools/ss_convert.c
 	@mkdir -p $(OUT)
-	$(CC) -std=gnu99 -O2 -Isrc -Wall -Wextra -o $@ $^
+	$(CC) -std=gnu99 -O2 -Isrc -Wall -Wextra -o $@ $(filter %.c,$^)
 
 tools: $(OUT)/ss-convert
 

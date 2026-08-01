@@ -8,7 +8,7 @@
 
 #include "doomkeys.h"
 #include "ss_gpio.h"
-#include "ss_pins.h"
+#include "ss_panel_config.h"
 
 typedef struct {
     int pin;

@@ -9,8 +9,7 @@
 
 #include <stdint.h>
 
-#define SS_PANEL_W 240
-#define SS_PANEL_H 240
+#include "ss_panel_config.h"
 
 /*
  * Nearest-neighbour scale from XRGB8888 to RGB565, preserving aspect ratio and
