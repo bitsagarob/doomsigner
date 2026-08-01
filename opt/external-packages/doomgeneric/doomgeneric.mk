@@ -13,8 +13,10 @@ DOOMGENERIC_LICENSE = GPL-2.0
 DOOMGENERIC_LICENSE_FILES = LICENSE
 
 # Where our platform layer and the panel config generator live.
-DOOMGENERIC_BOOTGAME = $(BR2_EXTERNAL_SEEDSIGNER_OS_PATH)/../boot-game/doom
-DOOMGENERIC_APP_SRC = $(BR2_EXTERNAL_SEEDSIGNER_OS_PATH)/rootfs-overlay/opt/src
+# BR2_EXTERNAL_RPI_SEEDSIGNER_PATH is <repo>/opt/pi0, and docker-compose
+# mounts both ./opt and ./boot-game, so these resolve inside the container.
+DOOMGENERIC_BOOTGAME = $(BR2_EXTERNAL_RPI_SEEDSIGNER_PATH)/../../boot-game/doom
+DOOMGENERIC_APP_SRC = $(BR2_EXTERNAL_RPI_SEEDSIGNER_PATH)/../rootfs-overlay/opt
 
 # The engine's own source list, minus its platform entry points.
 DOOMGENERIC_UNITS = dummy am_map doomdef doomstat dstrings d_event d_items \
@@ -38,7 +40,7 @@ DOOMGENERIC_CFLAGS = -std=gnu99 -O2 -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE \
 # transcription that could drift.
 define DOOMGENERIC_GENERATE_PANEL_CONFIG
 	$(HOST_DIR)/bin/python3 $(DOOMGENERIC_BOOTGAME)/tools/gen_panel_config.py \
-		--app $(DOOMGENERIC_APP_SRC)/.. \
+		--app $(DOOMGENERIC_APP_SRC) \
 		--profile $(SEEDSIGNER_HARDWARE_PROFILE) \
 		--display $(SEEDSIGNER_DISPLAY_CONFIG) \
 		--out $(@D)/ss_panel_config.h

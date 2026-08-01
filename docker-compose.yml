@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./opt:/opt
+      - ./boot-game:/boot-game
       - ./images:/images
       - ./.ccache:/root/.cache/ccache
       - ./.buildroot-ccache:/root/.buildroot-ccache
