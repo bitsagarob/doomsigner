@@ -10,6 +10,10 @@ SEEDSIGNER_APP ?= $(HOME)/apps/seedsigner-app
 PROFILE ?=
 PANEL_CONFIG := src/ss_panel_config.h
 
+# Declared before any rule so adding rules cannot silently change what a bare
+# `make` builds.
+.DEFAULT_GOAL := all
+
 # Upstream's explicit source list, which deliberately omits the SDL sound and
 # music backends. Their platform entry point is replaced by ours.
 DOOM_UNITS = dummy am_map doomdef doomstat dstrings d_event d_items d_iwad \
@@ -44,10 +48,12 @@ $(OUT)/doom-headless: $(PANEL_CONFIG) $(DOOM_SRCS) $(HEADLESS_SRCS)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
 
+all: $(OUT)/doom-headless
+
 clean:
 	rm -rf $(OUT) $(PANEL_CONFIG)
 
-.PHONY: clean panel-config
+.PHONY: all clean panel-config
 
 $(OUT)/test-ss: $(PANEL_CONFIG) src/ss_video.c src/ss_unlock.c tests/test_ss.c
 	@mkdir -p $(OUT)
