@@ -76,7 +76,14 @@ def test_the_control_pins_match_seedsigners_driver():
     source = SEEDSIGNER_DRIVER.read_text()
 
     for name, attribute in (("SS_PIN_DC", "_dc"), ("SS_PIN_RST", "_rst"), ("SS_PIN_BL", "_bl")):
-        board = int(re.search(rf"self\.{attribute}\s*=\s*(\d+)", source).group(1))
+        found = re.search(rf"self\.{attribute}\s*=\s*(\d+)", source)
+        assert found, (
+            f"{attribute} is no longer a literal pin number in ST7789.py. Some forks "
+            f"take pins from a configuration map instead, in which case our hardcoded "
+            f"{name} needs checking against whatever that map holds for this board."
+        )
+
+        board = int(found.group(1))
         ours = int(re.search(rf"#define {name}\s+(\d+)", PINS_HEADER.read_text()).group(1))
         assert ours == board_to_bcm[board], f"{name}: BOARD {board} should be BCM {board_to_bcm[board]}"
 

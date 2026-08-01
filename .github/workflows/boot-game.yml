@@ -5,6 +5,11 @@ on:
     branches: [boot-game, doom]
   pull_request:
     branches: [main]
+  # Upstream moves on its own schedule, so check for drift even when we are not
+  # committing anything.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   python:
@@ -57,3 +62,30 @@ jobs:
           SS_OUT_DIR=/tmp SS_MAX_FRAMES=200 SS_DUMP_EVERY=199 \
             ./build/doom-headless -iwad wad/freedoom1.wad
         working-directory: boot-game/doom
+
+  # Early warning only. SeedSigner's dev branch is allowed to break us; this job
+  # says so out loud rather than letting it surface on a flashed card.
+  upstream-canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: SeedSigner/seedsigner
+          ref: dev
+          path: seedsigner-app
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pytest pillow==10.3.0
+
+      - name: conformance against upstream dev
+        run: python -m pytest -q tests/test_upstream_api.py tests/test_doom_port.py
+        working-directory: boot-game
+        env:
+          PYTHONPATH: src:tests
+          SEEDSIGNER_APP: ${{ github.workspace }}/seedsigner-app
