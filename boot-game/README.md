@@ -44,10 +44,20 @@ modules need real hardware or the emulator.
 
 ## Adding a game
 
-`catalog.py` lists the games. An external one appears only when its binary is
-present on the device, so a Snake-only image shows no chooser at all and behaves
-exactly as it did before a second game existed. That is the whole feature
-toggle: it follows what was built into the image, with nothing to configure.
+One entry in `catalog.py`, one module under `games/` exposing
+`play(renderer, reader, unlock)`, and one test file. Nothing else in the package
+needs to know the game exists.
+
+Built-in games are imported only when chosen, so an unused or broken game costs
+nothing at boot. If a game raises, the player goes back to the chooser rather
+than the device bricking; with only one game installed it falls through to the
+wallet instead. External games are a binary and replace the process outright,
+which is the strongest isolation available.
+
+An external game appears only when its binary is present, so a Snake-only image
+shows no chooser at all and behaves exactly as it did before a second game
+existed. That is the whole feature toggle: it follows what was built into the
+image, with nothing to configure.
 
 DOOM is registered at `/usr/local/games/doom` and is **not built yet**. What
 remains is a buildroot external package wrapping `doomgeneric`, a `DG_DrawFrame`

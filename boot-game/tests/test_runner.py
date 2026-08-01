@@ -1,49 +1,20 @@
 """
 Wiring tests for the boot loop.
 
-These exist because the emulator harness cannot be trusted to prove the handoff:
-its Tk thread races under Xvfb and fails at random. The logic below is ours, so
-it gets tested deterministically here instead.
+These exist because the emulator harness cannot be trusted to prove any of it:
+its Tk thread races under Xvfb and fails at random. The logic here is ours, so
+it is tested deterministically instead.
 """
 
 import pytest
-from PIL import Image, ImageDraw
 
 from bootgame import runner
 from bootgame.catalog import DOOM, SNAKE
 from bootgame.keys import Key
 from bootgame.unlock import UnlockSequence
+from conftest import FakeReader, HandedOff
 
-
-class HandedOff(Exception):
-    """Stands in for os.execv, which never returns."""
-
-
-class FakeRenderer:
-    def __init__(self, size=240):
-        self.canvas = Image.new("RGB", (size, size))
-        self.draw = ImageDraw.Draw(self.canvas)
-        self.canvas_width = size
-        self.canvas_height = size
-        self.shown = 0
-
-    def show_image(self):
-        self.shown += 1
-
-
-class FakeReader:
-    """Yields each scripted batch of presses once, then nothing."""
-
-    def __init__(self, script):
-        self.script = list(script)
-
-    def presses(self):
-        return iter(self.script.pop(0)) if self.script else iter(())
-
-
-@pytest.fixture
-def renderer():
-    return FakeRenderer()
+GAMES = [SNAKE, DOOM]
 
 
 @pytest.fixture(autouse=True)
@@ -53,38 +24,18 @@ def no_sleeping(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def handoff_raises(monkeypatch):
-    def fake_launch():
-        raise HandedOff()
-
-    monkeypatch.setattr(runner, "launch_seedsigner", fake_launch)
-
-
-def test_the_unlock_sequence_hands_off_from_the_game(renderer):
-    reader = FakeReader([[Key.KEY1], [Key.KEY2], [Key.KEY3]])
-
-    with pytest.raises(HandedOff):
-        runner.play_snake(renderer, reader, UnlockSequence())
-
-
-def test_ordinary_play_does_not_hand_off(renderer):
-    reader = FakeReader([[Key.UP], [Key.LEFT], [Key.KEY1], [Key.DOWN]])
-
-    # No handoff, so the loop runs on; stop it once the script is exhausted.
-    with pytest.raises(StopIteration):
-        _run_until_script_exhausted(runner.play_snake, renderer, reader)
+    monkeypatch.setattr(runner, "launch_seedsigner", lambda: (_ for _ in ()).throw(HandedOff()))
 
 
 def test_the_unlock_sequence_hands_off_from_the_menu(renderer):
     reader = FakeReader([[Key.KEY1], [Key.KEY2], [Key.KEY3]])
 
     with pytest.raises(HandedOff):
-        runner.choose_game(renderer, reader, UnlockSequence(), [SNAKE, DOOM])
+        runner.choose_game(renderer, reader, UnlockSequence(), GAMES)
 
 
 def test_the_menu_returns_the_highlighted_entry(renderer):
-    reader = FakeReader([[Key.PRESS]])
-
-    chosen = runner.choose_game(renderer, reader, UnlockSequence(), [SNAKE, DOOM])
+    chosen = runner.choose_game(renderer, FakeReader([[Key.PRESS]]), UnlockSequence(), GAMES)
 
     assert chosen == SNAKE
 
@@ -92,7 +43,7 @@ def test_the_menu_returns_the_highlighted_entry(renderer):
 def test_the_menu_moves_before_selecting(renderer):
     reader = FakeReader([[Key.DOWN], [Key.PRESS]])
 
-    chosen = runner.choose_game(renderer, reader, UnlockSequence(), [SNAKE, DOOM])
+    chosen = runner.choose_game(renderer, reader, UnlockSequence(), GAMES)
 
     assert chosen == DOOM
 
@@ -103,51 +54,87 @@ def test_the_side_buttons_never_launch_a_game_from_the_menu(renderer):
     reader = FakeReader([[Key.KEY1], [Key.KEY2]])
 
     with pytest.raises(StopIteration):
-        _choose_until_script_exhausted(renderer, reader, [SNAKE, DOOM])
+        runner.choose_game(renderer, reader, UnlockSequence(), GAMES)
 
 
-def _choose_until_script_exhausted(renderer, reader, games):
-    original = reader.presses
+def test_an_external_game_replaces_the_process(renderer, monkeypatch):
+    launched = []
+    monkeypatch.setattr(runner, "launch_external", launched.append)
 
-    def presses():
-        if not reader.script:
-            raise StopIteration()
-        return original()
+    runner.play_game(DOOM, renderer, FakeReader([]), UnlockSequence())
 
-    reader.presses = presses
-    runner.choose_game(renderer, reader, UnlockSequence(), games)
+    assert launched == [DOOM]
 
 
-def _run_until_script_exhausted(loop, renderer, reader):
-    original = reader.presses
+def test_a_builtin_game_is_imported_only_when_played(renderer, monkeypatch):
+    imported = []
 
-    def presses():
-        if not reader.script:
-            raise StopIteration()
-        return original()
+    class FakeModule:
+        @staticmethod
+        def play(renderer, reader, unlock):
+            imported.append("played")
 
-    reader.presses = presses
-    loop(renderer, reader, UnlockSequence())
+    monkeypatch.setattr(runner.importlib, "import_module", lambda name: imported.append(name) or FakeModule)
+
+    runner.play_game(SNAKE, renderer, FakeReader([]), UnlockSequence())
+
+    assert imported == ["bootgame.games.snake", "played"]
 
 
-def test_the_game_renders_each_tick(renderer):
-    reader = FakeReader([])
-    monkey = runner.time
+def test_a_broken_game_does_not_take_the_others_down(renderer, monkeypatch):
+    # With more than one game installed, a game that raises sends the player
+    # back to the chooser rather than bricking the device.
+    monkeypatch.setattr(runner, "available_games", lambda: GAMES)
+    monkeypatch.setattr(runner, "play_game", _raising(RuntimeError("boom")))
 
-    ticks = {"count": 0}
-    real_monotonic = monkey.monotonic
+    visits = []
 
-    def counting_monotonic():
-        ticks["count"] += 1
-        if ticks["count"] > 6:
+    def fake_choose(renderer, reader, unlock, games):
+        visits.append(games)
+        if len(visits) > 2:
             raise HandedOff()
-        return real_monotonic()
+        return SNAKE
 
-    monkey.monotonic = counting_monotonic
-    try:
-        with pytest.raises(HandedOff):
-            runner.play_snake(renderer, reader, UnlockSequence())
-    finally:
-        monkey.monotonic = real_monotonic
+    monkeypatch.setattr(runner, "choose_game", fake_choose)
+    monkeypatch.setattr(runner, "ButtonReader", lambda: FakeReader([]), raising=False)
 
-    assert renderer.shown > 0
+    with pytest.raises(HandedOff):
+        _run_with_fake_renderer(runner, renderer, monkeypatch)
+
+    assert len(visits) == 3
+
+
+def _raising(error):
+    def raise_it(*args, **kwargs):
+        raise error
+
+    return raise_it
+
+
+def _run_with_fake_renderer(module, renderer, monkeypatch):
+    """run() imports its renderer and reader lazily, so stub both out."""
+    import sys
+    import types
+
+    fake_renderer_module = types.ModuleType("seedsigner.gui.renderer")
+
+    class Renderer:
+        @staticmethod
+        def configure_instance():
+            pass
+
+        @staticmethod
+        def get_instance():
+            return renderer
+
+    fake_renderer_module.Renderer = Renderer
+
+    fake_input = types.ModuleType("bootgame.input")
+    fake_input.ButtonReader = lambda: FakeReader([])
+
+    monkeypatch.setitem(sys.modules, "seedsigner", types.ModuleType("seedsigner"))
+    monkeypatch.setitem(sys.modules, "seedsigner.gui", types.ModuleType("seedsigner.gui"))
+    monkeypatch.setitem(sys.modules, "seedsigner.gui.renderer", fake_renderer_module)
+    monkeypatch.setitem(sys.modules, "bootgame.input", fake_input)
+
+    module.run()

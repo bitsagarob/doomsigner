@@ -5,22 +5,19 @@ Imported lazily by `bootgame.boot` so that an import failure anywhere in here
 still results in a working signing device.
 """
 
+import importlib
 import logging
 import time
 
 from bootgame.catalog import available_games
-from bootgame.display import render, render_menu
-from bootgame.game import SnakeGame
+from bootgame.display import render_menu
 from bootgame.launch import launch_external, launch_seedsigner
 from bootgame.menu import Menu
 from bootgame.unlock import UnlockSequence
 
 logger = logging.getLogger(__name__)
 
-# Game speed, and how often button state is sampled between frames.
-TICK_SECONDS = 0.18
 POLL_SECONDS = 0.01
-GAME_OVER_PAUSE_SECONDS = 1.5
 
 
 def choose_game(renderer, reader, unlock: UnlockSequence, games):
@@ -31,8 +28,6 @@ def choose_game(renderer, reader, unlock: UnlockSequence, games):
 
     while True:
         for key in reader.presses():
-            # Unlock is fed first so a completed sequence always wins, even
-            # though KEY1 is also a select key.
             if unlock.feed(key):
                 launch_seedsigner()
 
@@ -46,35 +41,25 @@ def choose_game(renderer, reader, unlock: UnlockSequence, games):
         time.sleep(POLL_SECONDS)
 
 
-def play_snake(renderer, reader, unlock: UnlockSequence) -> None:
-    """Play until the unlock sequence is entered. Does not return."""
-    game = SnakeGame()
-    next_tick = time.monotonic()
+def play_game(game, renderer, reader, unlock: UnlockSequence) -> None:
+    """
+    Play one game.
 
-    while True:
-        for key in reader.presses():
-            if unlock.feed(key):
-                launch_seedsigner()
+    External games replace this process and never come back. Built-in ones are
+    imported here and not before, so an unused game costs nothing at boot and a
+    broken one cannot stop the device reaching the wallet.
+    """
+    if game.is_external:
+        # execv does not return, but be explicit rather than relying on it.
+        launch_external(game)
+        return
 
-            game.turn(key)
-
-        now = time.monotonic()
-        if now >= next_tick:
-            game.tick()
-            render(renderer.draw, game, renderer.canvas_width, renderer.canvas_height)
-            renderer.show_image()
-
-            if game.game_over:
-                time.sleep(GAME_OVER_PAUSE_SECONDS)
-                game.reset()
-
-            next_tick = time.monotonic() + TICK_SECONDS
-
-        time.sleep(POLL_SECONDS)
+    logger.info("loading %s from %s", game.name, game.module)
+    importlib.import_module(game.module).play(renderer, reader, unlock)
 
 
 def run() -> None:
-    """Choose, play, hand off. Does not return."""
+    """Choose, play, hand off. Does not return under normal use."""
     from seedsigner.gui.renderer import Renderer
 
     from bootgame.input import ButtonReader
@@ -84,15 +69,19 @@ def run() -> None:
     reader = ButtonReader()
     unlock = UnlockSequence()
 
-    games = available_games()
-    # With one game installed there is nothing to choose, so no menu appears and
-    # the device behaves exactly as it did before a second game existed.
-    if len(games) == 1:
-        game = games[0]
-    else:
-        game = choose_game(renderer, reader, unlock, games)
+    while True:
+        games = available_games()
+        # With one game there is nothing to choose, so no chooser appears and
+        # the device behaves exactly as it did before a second game existed.
+        game = games[0] if len(games) == 1 else choose_game(renderer, reader, unlock, games)
 
-    if not game.is_builtin:
-        launch_external(game)
+        try:
+            play_game(game, renderer, reader, unlock)
+        except Exception:
+            logger.exception("%s failed", game.name)
+            if len(games) == 1:
+                # Nothing to fall back to, so let boot.py hand off to the wallet
+                # rather than spin on a game that cannot start.
+                raise
 
-    play_snake(renderer, reader, unlock)
+        # A game that returns simply sends the player back to the chooser.
