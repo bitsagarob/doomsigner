@@ -1,7 +1,12 @@
 # boot-game
 
-The device boots into Snake. Press **KEY1, KEY2, KEY3** and it hands off to
+The device boots into a game. Press **KEY1, KEY2, KEY3** and it hands off to
 SeedSigner.
+
+With more than one game installed a chooser appears first. It lists games only:
+there is deliberately no menu entry for the wallet, because that would give the
+whole thing away. The chooser confirms with the joystick click alone, leaving
+the three side buttons free to spell the unlock sequence from anywhere.
 
 ## How it hooks in
 
@@ -36,6 +41,18 @@ SeedSigner's button module imports `RPi.GPIO` at module scope, so anything
 importing it cannot even load on a development machine. Keeping the game logic
 free of that import is what makes it testable off-device, and it means only two
 modules need real hardware or the emulator.
+
+## Adding a game
+
+`catalog.py` lists the games. An external one appears only when its binary is
+present on the device, so a Snake-only image shows no chooser at all and behaves
+exactly as it did before a second game existed. That is the whole feature
+toggle: it follows what was built into the image, with nothing to configure.
+
+DOOM is registered at `/usr/local/games/doom` and is **not built yet**. What
+remains is a buildroot external package wrapping `doomgeneric`, a `DG_DrawFrame`
+that pushes to the ST7789 over SPI, a `DG_GetKey` that also watches for the
+unlock sequence, and a Freedoom WAD so the licensing stays clean.
 
 ## Tests
 

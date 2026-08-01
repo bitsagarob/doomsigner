@@ -8,8 +8,9 @@ one that needs a Raspberry Pi or the emulator in order to import at all.
 import logging
 from typing import Dict, Optional
 
-from seedsigner.hardware.buttons import HardwareButtonsConstants
+from seedsigner.hardware.buttons import HardwareButtons, HardwareButtonsConstants
 
+from bootgame.edges import EdgeDetector
 from bootgame.keys import Key
 
 logger = logging.getLogger(__name__)
@@ -28,3 +29,15 @@ CHANNEL_TO_KEY: Dict[int, Key] = {
 
 def key_for_channel(channel: int) -> Optional[Key]:
     return CHANNEL_TO_KEY.get(channel)
+
+
+class ButtonReader:
+    """Thin adapter: polls the real buttons, delegates the logic to EdgeDetector."""
+
+    def __init__(self):
+        self.buttons = HardwareButtons.get_instance()
+        self.edges = EdgeDetector(HardwareButtonsConstants.ALL_KEYS, key_for_channel)
+
+
+    def presses(self):
+        return self.edges.presses(lambda channel: self.buttons.check_for_low(key=channel))
