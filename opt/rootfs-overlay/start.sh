@@ -3,7 +3,7 @@
 cd /opt/src/
 
 #/usr/bin/python3 main.py >> /dev/kmsg 2>&1 &  # version that writes output to dmesg
-/usr/bin/python3 main.py &
+PYTHONPATH=/usr/local/bootgame /usr/bin/python3 -m bootgame.boot &
 
 # Set the date to release so that GPG can work
 TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
