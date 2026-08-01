@@ -1,0 +1,10 @@
+config BR2_PACKAGE_DOOMGENERIC
+	bool "doomgeneric"
+	help
+	  DOOM, targeting the SeedSigner panel and buttons.
+
+	  Boots as one of the games offered before the wallet starts. The
+	  unlock sequence hands off to SeedSigner exactly as the Python
+	  games do.
+
+	  https://github.com/ozkl/doomgeneric
