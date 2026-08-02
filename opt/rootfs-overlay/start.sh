@@ -2,8 +2,16 @@
 
 cd /opt/src/
 
+# On success the boot game execs into SeedSigner, so this process becomes the
+# wallet. If it cannot even start, run the wallet directly instead: an image
+# once shipped with the game staged nowhere, and because this line was the only
+# thing launching anything, the device booted to a black screen. A signing
+# device has to come up whatever the easter egg does.
 #/usr/bin/python3 main.py >> /dev/kmsg 2>&1 &  # version that writes output to dmesg
-PYTHONPATH=/usr/local/bootgame /usr/bin/python3 -m bootgame.boot &
+{
+    PYTHONPATH=/usr/local/bootgame /usr/bin/python3 -m bootgame.boot ||
+        /usr/bin/python3 main.py
+} &
 
 # Set the date to release so that GPG can work
 TIME_DEFAULT_FILE="/opt/src/.build_commit_time"
