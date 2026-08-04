@@ -66,7 +66,7 @@ static void test_it_rearms_after_unlocking(void)
     CHECK(ss_unlock_feed(&unlock, KEY1) == 1);
 }
 
-static void test_scale_letterboxes_and_centres(void)
+static void test_scale_fills_the_panel(void)
 {
     static uint32_t src[320 * 200];
     static uint16_t dst[SS_PANEL_W * SS_PANEL_H];
@@ -76,22 +76,18 @@ static void test_scale_letterboxes_and_centres(void)
     }
     ss_scale_to_565(src, 320, 200, dst);
 
-    /* Derive the expected bars from the panel, since the panel is generated.
-       240x240 letterboxes heavily; 320x240 fits DOOM almost exactly. */
-    const int scale_x = (SS_PANEL_W << 16) / 320;
-    const int scale_y = (SS_PANEL_H << 16) / 200;
-    const int scale = scale_x < scale_y ? scale_x : scale_y;
-    const int out_h = (200 * scale) >> 16;
-    const int bar = (SS_PANEL_H - out_h) / 2;
-    const int centre_x = SS_PANEL_W / 2;
-
-    CHECK(dst[(size_t)(SS_PANEL_H / 2) * SS_PANEL_W + centre_x] == 0xFFFF);
-
-    if (bar > 0) {
-        CHECK(dst[centre_x] == 0x0000);
-        CHECK(dst[(size_t)(bar - 1) * SS_PANEL_W + centre_x] == 0x0000);
-        CHECK(dst[(size_t)(SS_PANEL_H - 1) * SS_PANEL_W + centre_x] == 0x0000);
+    /* Every pixel of the panel, not most of them. A solid source has to come out
+       a solid panel: bars anywhere would mean the scale stopped short of an edge,
+       which is what this used to assert and what a 4:3 panel should never do to
+       artwork drawn for a 4:3 screen. Corners and edges as well as the middle,
+       because an off-by-one in either axis shows up there first. */
+    for (int i = 0; i < SS_PANEL_W * SS_PANEL_H; i++) {
+        CHECK(dst[i] == 0xFFFF);
     }
+    CHECK(dst[0] == 0xFFFF);
+    CHECK(dst[SS_PANEL_W - 1] == 0xFFFF);
+    CHECK(dst[(size_t)(SS_PANEL_H - 1) * SS_PANEL_W] == 0xFFFF);
+    CHECK(dst[(size_t)SS_PANEL_H * SS_PANEL_W - 1] == 0xFFFF);
 }
 
 static void test_scale_converts_colour(void)
@@ -134,7 +130,7 @@ int main(void)
     test_wrong_press_resets();
     test_wrong_press_may_open_a_new_attempt();
     test_it_rearms_after_unlocking();
-    test_scale_letterboxes_and_centres();
+    test_scale_fills_the_panel();
     test_scale_converts_colour();
     test_scale_survives_a_degenerate_source();
     test_wire_packing_is_big_endian();

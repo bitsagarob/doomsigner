@@ -9,7 +9,13 @@
 
 #include <stdint.h>
 
-#include "ss_panel_config.h"
+/*
+ * Angle brackets, not quotes, because this header is generated and a target may
+ * generate its own. A quoted include would always find the copy sitting next to
+ * this file first, whatever the include path said, and the browser build would
+ * silently inherit the panel the last device build was configured for.
+ */
+#include <ss_panel_config.h>
 
 /*
  * Nearest-neighbour scale from XRGB8888 to RGB565, preserving aspect ratio and

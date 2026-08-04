@@ -25,27 +25,8 @@ GENERATOR = DOOM / "tools/gen_panel_config.py"
 SEEDSIGNER_APP = Path(os.environ.get("SEEDSIGNER_APP", BOOT_GAME.parent.parent / "seedsigner-app"))
 SEEDSIGNER_FORK = Path(os.environ.get("SEEDSIGNER_FORK", BOOT_GAME.parent.parent / "shieldsigner-app"))
 
-def _has_io_config(checkout):
-    return (checkout / "src/seedsigner/hardware/io_config.json").is_file()
-
-
-# Which checkout is upstream and which is a fork varies by what this repo is
-# based on, so identify them by capability rather than by name.
-WITH_IO_CONFIG = next(
-    (c for c in (SEEDSIGNER_APP, SEEDSIGNER_FORK) if c.exists() and _has_io_config(c)), None
-)
-WITHOUT_IO_CONFIG = next(
-    (c for c in (SEEDSIGNER_APP, SEEDSIGNER_FORK) if c.exists() and not _has_io_config(c)), None
-)
-
 needs_app = pytest.mark.skipif(not SEEDSIGNER_APP.exists(), reason=f"needs {SEEDSIGNER_APP}")
-needs_both = pytest.mark.skipif(
-    not (WITH_IO_CONFIG and WITHOUT_IO_CONFIG),
-    reason="needs one checkout with io_config.json and one without",
-)
-needs_io_config = pytest.mark.skipif(
-    WITH_IO_CONFIG is None, reason="needs a checkout shipping io_config.json"
-)
+needs_fork = pytest.mark.skipif(not SEEDSIGNER_FORK.exists(), reason=f"needs {SEEDSIGNER_FORK}")
 
 # Verified by hand against ST7789.py, cross-checked against the emulator's
 # constants, and again against io_config.json. Three independent sources.
@@ -100,14 +81,15 @@ def test_the_init_sequence_ends_by_turning_the_display_on(tmp_path):
     assert 0x3A in commands, "COLMOD must be set or the pixel format is undefined"
 
 
-@needs_both
+@needs_app
+@needs_fork
 def test_both_checkouts_agree(tmp_path):
     # One parses ST7789.py literals, the other reads io_config.json. They
     # describe the same hardware, so they must produce the same header.
-    _, literals = generate(WITHOUT_IO_CONFIG, tmp_path / "a")
-    _, mapped = generate(WITH_IO_CONFIG, tmp_path / "b", profile="RPI_40")
+    _, upstream = generate(SEEDSIGNER_APP, tmp_path / "a")
+    _, fork = generate(SEEDSIGNER_FORK, tmp_path / "b", profile="RPI_40")
 
-    assert defines(literals) == defines(mapped)
+    assert defines(upstream) == defines(fork)
 
 
 @needs_app
@@ -118,9 +100,9 @@ def test_it_refuses_a_display_nobody_has_verified(tmp_path):
     assert "has not been verified" in result.stderr
 
 
-@needs_io_config
+@needs_fork
 def test_it_refuses_an_unknown_hardware_profile(tmp_path):
-    result, _ = generate(WITH_IO_CONFIG, tmp_path, profile="NOT_A_BOARD")
+    result, _ = generate(SEEDSIGNER_FORK, tmp_path, profile="NOT_A_BOARD")
 
     assert result.returncode != 0
     assert "unknown profile" in result.stderr

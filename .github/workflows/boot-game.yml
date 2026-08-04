@@ -21,16 +21,16 @@ jobs:
       # Checking it out lets the conformance tests run instead of skipping.
       - uses: actions/checkout@v4
         with:
-          repository: 3rdIteration/seedsigner
-          ref: dev
+          repository: SeedSigner/seedsigner
+          ref: "0.8.7"
           path: seedsigner-app
 
       # A second, independent description of the same hardware, so the
       # generator can be checked against both.
       - uses: actions/checkout@v4
         with:
-          repository: SeedSigner/seedsigner
-          ref: "0.8.7"
+          repository: 3rdIteration/seedsigner
+          ref: dev
           path: seedsigner-fork
 
       - uses: actions/setup-python@v5
@@ -60,8 +60,8 @@ jobs:
       # needs a checkout of it.
       - uses: actions/checkout@v4
         with:
-          repository: 3rdIteration/seedsigner
-          ref: dev
+          repository: SeedSigner/seedsigner
+          ref: "0.8.7"
           path: seedsigner-app
 
       - name: unit tests
@@ -70,15 +70,15 @@ jobs:
         env:
           MAKE_ARGS: >-
             DG=${{ github.workspace }}/doomgeneric-src/doomgeneric
-            SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app PROFILE=RPI_40 DISPLAY_CONFIG=st7789_320x240
+            SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app
 
       - name: device target compiles
-        run: make check DG=${{ github.workspace }}/doomgeneric-src/doomgeneric SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app PROFILE=RPI_40 DISPLAY_CONFIG=st7789_320x240
+        run: make check DG=${{ github.workspace }}/doomgeneric-src/doomgeneric SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app
         working-directory: boot-game/doom
 
       - name: headless target builds and runs
         run: |
-          make DG=${{ github.workspace }}/doomgeneric-src/doomgeneric SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app PROFILE=RPI_40 DISPLAY_CONFIG=st7789_320x240
+          make DG=${{ github.workspace }}/doomgeneric-src/doomgeneric SEEDSIGNER_APP=${{ github.workspace }}/seedsigner-app
           ./fetch-wad.sh
           SS_OUT_DIR=/tmp SS_MAX_FRAMES=200 SS_DUMP_EVERY=199 \
             ./build/doom-headless -iwad wad/freedoom1.wad

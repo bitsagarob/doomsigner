@@ -2,12 +2,11 @@
 
 set -o errexit -o pipefail
 export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in docker container
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}" # Reproducible builds: epoch used by compilers and build tools
 
-# global variables 
+# global variables
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
-seedsigner_app_repo="https://github.com/3rditeration/seedsigner.git"
+seedsigner_app_repo="https://github.com/SeedSigner/seedsigner.git"
 seedsigner_app_repo_branch="dev"
 
 help()
@@ -19,16 +18,12 @@ help()
       --pi0         Build for pi0 and pi0w
       --pi2         Build for pi2
       --pi02w       Build for pi02w and pi3
-	  --pi02w-smartcard
       --pi4         Build for pi4 and pi4cmio
-      --lafrite     Build for La Frite AML-S805X-AC
   
   Options:
-  -h, --help           Display a help screen and quit
+  -h, --help           Display a help screen and quit 
       --dev            Builds developer version of images
-          --smartcard      Builds with smartcard support
       --no-clean       Leave previous build, target, and output files
-      --debug-rootfs   Compress the built root filesystem into a tar.gz archive
       --skip-repo      Skip pulling repo, assume rootfs-overlay/opt is populated with app code
       --app-repo       Build image with not official seedsigner github repo
       --app-branch     Build image with repo branch other than default
@@ -63,47 +58,67 @@ compile_translations_and_fonts() {
   # generate messages.mo files for each translation
   python3 setup.py compile_catalog || exit
 
-  # extract characters from the translations and slim down the bundled NotoSans
-  # fonts. The translations repo only ships the fonts and the extraction tool on
-  # newer commits, so skip this step gracefully when either is missing (e.g. when
-  # the app branch pins an older seedsigner-translations commit).
-  ss_translations_tool="${ss_translations_repo}/tools/extract_characters_from_babel_mo.py"
-  if [ -d "${ss_translations_repo}/fonts" ] && [ -f "${ss_translations_tool}" ]; then
+  # extract characters from all messages.mo translations into all_chars shell variable
+  all_chars=""
+  for f in ${ss_translations_repo}/l10n/*/LC_MESSAGES/messages.mo; do
+    # extract just the locale name from the path (e.g. "ca" from ".../l10n/ca/LC_MESSAGES/messages.mo")
+    locale=$(basename "$(dirname "$(dirname "$f")")")
+    output_chars=$(cd ${ss_translations_repo}/tools && python3 extract_characters_from_babel_mo.py "$locale") || echo "Warning: failed to extract chars for locale: $locale" >&2
+    all_chars="${all_chars}${output_chars}"
+  done
 
-    # extract characters from all messages.mo translations into all_chars shell variable
-    all_chars=""
-    for f in ${ss_translations_repo}/l10n/*/LC_MESSAGES/messages.mo; do
-      # extract just the locale name from the path (e.g. "ca" from ".../l10n/ca/LC_MESSAGES/messages.mo")
-      locale=$(basename "$(dirname "$(dirname "$f")")")
-      output_chars=$(cd ${ss_translations_repo}/tools && python3 extract_characters_from_babel_mo.py "$locale") || echo "Warning: failed to extract chars for locale: $locale" >&2
-      all_chars="${all_chars}${output_chars}"
-    done
+  # add newline chars
+  all_chars="${all_chars}\n\r"
 
-    # add newline chars
-    all_chars="${all_chars}\n\r"
+  # rename source NotoSans*ttf files to include "Original" in the name
+  mv ${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf
+  mv ${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf
 
-    # rename each source NotoSans*ttf to include "Original" in the name, then slim
-    # it down to just the characters used by the translations
-    for font in NotoSansAR NotoSansJP NotoSansKR NotoSansSC NotoSansTH; do
-      src="${ss_translations_repo}/fonts/${font}-Regular.ttf"
-      if [ ! -f "${src}" ]; then
-        echo "Warning: font ${src} not found, skipping" >&2
-        continue
-      fi
-      orig="${ss_translations_repo}/fonts/${font}-Regular-Original.ttf"
-      mv "${src}" "${orig}" || exit
-      pyftsubset "${orig}" --text="${all_chars}" --output-file="${src}" || exit
-    done
+  # slim down font files using characters in all_chars
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansAR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansAR-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansJP-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansJP-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansKR-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansKR-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansSC-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansSC-Regular.ttf || exit
+  pyftsubset ${ss_translations_repo}/fonts/NotoSansTH-Regular-Original.ttf --text="${all_chars}" --output-file=${ss_translations_repo}/fonts/NotoSansTH-Regular.ttf || exit
 
-    # remove original font files
-    rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
-  else
-    echo "Translation fonts or extraction tool not found, skipping font slimming"
-  fi
+  # remove original font files
+  rm -f ${ss_translations_repo}/fonts/NotoSans*Regular-Original*ttf
 
   cd -
   deactivate
 
+}
+
+write_version_json() {
+  # Writes ${rootfs_overlay}/opt/src/seedsigner/version.json, which SeedSigner OS reads
+  # at runtime. A missing or incomplete file makes the app raise at the splash screen,
+  # so failures here are fatal.
+  # Must run while .git/ and tools/ are still present (delete_unnecessary_files drops them).
+  app_dir="${rootfs_overlay}/opt"
+
+  if [ -f "${app_dir}/src/seedsigner/version.json" ]; then
+    # Already written: either by an earlier build_image call (--all) or by the caller.
+    echo "version.json already present, leaving as-is"
+    cat "${app_dir}/src/seedsigner/version.json"
+    return
+  fi
+
+  if [ ! -f "${app_dir}/tools/write_versionfile.py" ]; then
+    echo "ERROR: ${app_dir}/tools/write_versionfile.py not found; cannot write version.json" >&2
+    exit 1
+  fi
+
+  # In CI the overlay is a bind-mounted host checkout owned by a different uid than the
+  # root user in this container. git refuses such repos ("dubious ownership") and
+  # version.py silently discards the error, yielding a version.json that bricks boot.
+  git config --global --add safe.directory "$(cd "${app_dir}" && pwd)"
+
+  # PYTHONPATH=src is enough; write_versionfile.py's imports are stdlib-only.
+  export SEEDSIGNER_OS_BUILDER=1
+  (cd "${app_dir}" && PYTHONPATH=src python3 tools/write_versionfile.py) || exit
 }
 
 download_app_repo() {
@@ -125,21 +140,13 @@ download_app_repo() {
     git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
-  # Record the app commit time for display on device
-  repo_commit_epoch=$(git -C "${rootfs_overlay}/opt" log -1 --format=%ct 2>/dev/null || true)
-  if [ -n "$repo_commit_epoch" ]; then
-    repo_commit_time=$(date -u -d "@${repo_commit_epoch}" "+%Y-%m-%d %H:%M")
-    echo "${repo_commit_time}" > "${rootfs_overlay}/opt/src/.build_commit_time"
-  fi
+  compile_translations_and_fonts
+}
 
-  # Only compile translations and slim fonts if the catalog directory exists (not all branches/repos configure this)
-  if [ -d "${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n" ]; then
-    compile_translations_and_fonts
-  else
-    echo "Translation catalog directory not found, skipping compile_translations_and_fonts"
-  fi
-
-  # Delete unnecessary files to save space
+delete_unnecessary_files() {
+  # Delete unnecessary files to save space. Runs independently of download_app_repo so
+  # that --skip-repo builds (CI, which populates rootfs-overlay/opt itself) are trimmed
+  # too. Must run after write_version_json, which needs .git/ and tools/.
   # folders
   rm -rf ${rootfs_overlay}/opt/.github
   rm -rf ${rootfs_overlay}/opt/docker
@@ -149,7 +156,8 @@ download_app_repo() {
   rm -rf ${rootfs_overlay}/opt/seedsigner-screenshots
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/.git*
   rm -rf ${rootfs_overlay}/opt/tests
-  #rm -rf ${rootfs_overlay}/opt/tools
+  rm -rf ${rootfs_overlay}/opt/tools
+  # files
   rm -rf ${rootfs_overlay}/opt/.git*
   rm -rf ${rootfs_overlay}/opt/docker-compose.yml
   rm -rf ${rootfs_overlay}/opt/LICENSE.md
@@ -196,6 +204,11 @@ build_image() {
     download_app_repo
   fi
 
+  # Both run unconditionally so --skip-repo builds get the same treatment. Order
+  # matters: write_version_json needs the .git/ and tools/ that the other removes.
+  write_version_json
+  delete_unnecessary_files
+
   # Setup external tree
   #make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ #2> /dev/null > /dev/null
 
@@ -206,9 +219,7 @@ build_image() {
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress
   
-  # Sanitize branch name so that it is safe for filenames
-  sanitized_branch=$(echo "${seedsigner_app_repo_branch}" | tr -c 'A-Za-z0-9_.-' '_')
-  seedsigner_os_image_output="${image_dir}/seedsigner_os.${sanitized_branch}.${config_name}.img"
+  seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_branch}.${config_name}.img"
   if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
     # use commit id instead of branch name if it is set
     seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_commit_id}.${config_name}.img"
@@ -216,23 +227,7 @@ build_image() {
   
   if [ -f "${build_dir}/images/seedsigner_os.img" ] && [ -d "${image_dir}" ]; then
     mv -f "${build_dir}/images/seedsigner_os.img" "${seedsigner_os_image_output}"
-    # Set a fixed timestamp to keep reproducible metadata on the raw image
-    touch -d '2025-07-01 00:00:00' "${seedsigner_os_image_output}"
-
-    # Output checksum for the raw image
     sha256sum "${seedsigner_os_image_output}"
-  fi
-
-  if [ -n "${DEBUG_ROOTFS}" ] && [ -d "${build_dir}/target" ]; then
-    rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${sanitized_branch}.${config_name}.tar.gz"
-    if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
-      rootfs_tar_output="${image_dir}/seedsigner_os_rootfs.${seedsigner_app_repo_commit_id}.${config_name}.tar.gz"
-    fi
-
-    tar -C "${build_dir}" --sort=name --owner=root:0 --group=root:0 \
-        --mtime='2025-07-01 00:00:00' -czf "${rootfs_tar_output}" target
-    touch -d '2025-07-01 00:00:00' "${rootfs_tar_output}"
-    sha256sum "${rootfs_tar_output}"
   fi
   
   cd - > /dev/null # return to previous working directory quietly
@@ -270,9 +265,6 @@ while (( "$#" )); do
   --pi4)
     PI4_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
     ;;
-  --lafrite)
-    LAFRITE_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
-    ;;
   --no-clean)
     NOCLEAN=0; shift
     ;;
@@ -284,12 +276,6 @@ while (( "$#" )); do
     ;;
   --dev)
     DEVBUILD=0; shift
-    ;;
-  --smartcard)
-    SMARTCARD=0; shift
-    ;;
-  --debug-rootfs)
-    DEBUG_ROOTFS=0; shift
     ;;
   --app-repo=*)
     APP_REPO=$(echo "${1}" | cut -d "=" -f2-); shift
@@ -352,12 +338,6 @@ if ! [ -z $DEVBUILD ]; then
   DEVARG="-dev"
 fi
 
-# Check for --dev argument to pass to build_image function
-SMARTCARDARG=""
-if ! [ -z $SMARTCARD ]; then
-  SMARTCARDARG="-smartcard"
-fi
-
 # check for custom app repo
 if ! [ -z ${APP_REPO} ]; then
   seedsigner_app_repo="${APP_REPO}"
@@ -379,36 +359,30 @@ fi
 
 # Build All Architectures
 if ! [ -z ${ALL_FLAG} ]; then
-  build_image "pi0${SMARTCARDARG}${DEVARG}" "clean" "${SKIPREPO_ARG}"
-  build_image "pi02w${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
-  build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
-  build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
-  build_image "lafrite${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi0${DEVARG}" "clean" "${SKIPREPO_ARG}"
+  build_image "pi02w${DEVARG}" "clean" "skip-repo"
+  build_image "pi2${DEVARG}" "clean" "skip-repo"
+  build_image "pi4${DEVARG}" "clean" "skip-repo"
 fi
 
 # Build only for pi0, pi0w, and pi1
 if ! [ -z ${PI0_FLAG} ]; then
-  build_image "pi0${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi0${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # Build only for pi2
 if ! [ -z ${PI2_FLAG} ]; then
-  build_image "pi2${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi2${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi02w
 if ! [ -z ${PI02W_FLAG} ]; then
-  build_image "pi02w${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi02w${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
-  build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
-fi
-
-# build for La Frite AML-S805X-AC
-if ! [ -z ${LAFRITE_FLAG} ]; then
-  build_image "lafrite${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi4${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
