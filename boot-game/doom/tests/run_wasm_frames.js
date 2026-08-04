@@ -24,7 +24,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const FRAME_BYTES = 240 * 240 * 2;
+/* Read off the header the wasm build was configured with, not restated here:
+ * this was 240x240 until the browser build moved to the Plus panel, and a
+ * hardcoded copy meant the run reported every frame as the wrong size while the
+ * frames were in fact right. */
+const PANEL = fs.readFileSync(
+    path.join(__dirname, '..', 'build', 'wasm-include', 'ss_panel_config.h'), 'utf8');
+const panelDim = (name) => Number(/#define\s+SS_PANEL_(\w+)/.source && new RegExp('#define\\s+SS_PANEL_' + name + '\\s+(\\d+)').exec(PANEL)[1]);
+const FRAME_BYTES = panelDim('W') * panelDim('H') * 2;
 
 const root = path.resolve(__dirname, '..');
 const frameCount = Number(process.argv[2] || 120);

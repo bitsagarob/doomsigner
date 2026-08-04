@@ -6,7 +6,7 @@
  *   DoomRun.stop()
  *   DoomRun.ready                        resolves once DOOM is running
  *
- * onFrame is handed 240*240*2 bytes of RGB565, big endian: byte for byte what
+ * onFrame is handed one panel's worth of RGB565, big endian: byte for byte what
  * the ST7789 on a real SeedSigner receives over SPI, letterboxed the same way,
  * because it comes out of the same scaler the device firmware uses. Not DOOM
  * rendered nicely for a canvas, which would look better and be a lie.

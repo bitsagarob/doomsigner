@@ -89,15 +89,18 @@ tools: $(OUT)/ss-convert
 # fail without it.
 EMCC ?= emcc
 
-# The simulator is the original 240x240 SeedSigner, so the browser build pins
-# that panel in its own header instead of sharing src/ss_panel_config.h, which
-# carries whatever the local device build was last configured for. A Plus-shaped
-# 320x240 frame would not fit the screen the simulator draws.
+# The simulator draws a SeedSigner Plus and runs its wallet at 320x240: its
+# worker asks the firmware for st7789_320x240, and that is the panel the browser
+# shell has around it. Pinned in the wasm build's own header rather than shared
+# with src/ss_panel_config.h, which carries whatever the local device build was
+# last configured for. Built at 240x240 this fitted inside that panel with black
+# bars down both sides, which was not the device being faithful about anything,
+# just DOOM in a box.
 WASM_CONFIG := $(OUT)/wasm-include/ss_panel_config.h
 
 $(WASM_CONFIG): tools/gen_panel_config.py
 	python3 tools/gen_panel_config.py --app "$(SEEDSIGNER_APP)" \
-	  --display st7789_240x240 --out $@
+	  --display st7789_320x240 --out $@
 
 # MODULARIZE because the page loads this alongside Pyodide and a bare global
 # Module would collide. The WAD is not preloaded: it is nearly 30MB, it would
