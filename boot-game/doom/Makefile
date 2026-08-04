@@ -31,6 +31,7 @@ DOOM_SRCS := $(addprefix $(DG)/, $(addsuffix .c, $(DOOM_UNITS)))
 HEADLESS_SRCS := src/ss_video.c src/ss_unlock.c src/dg_headless.c
 DEVICE_SRCS := src/ss_video.c src/ss_unlock.c src/ss_gpio.c src/ss_display.c \
                src/ss_input.c src/dg_seedsigner.c
+WASM_SRCS := src/ss_video.c src/dg_wasm.c
 
 CFLAGS += -std=gnu99 -O2 -I$(DG) -Isrc \
           -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE \
@@ -82,3 +83,37 @@ $(OUT)/ss-convert: $(PANEL_CONFIG) src/ss_video.c tools/ss_convert.c
 tools: $(OUT)/ss-convert
 
 .PHONY: tools
+
+# The browser target, for the simulator. Needs emscripten on PATH; emsdk is not
+# a dependency of anything else here, so this target is the only one that will
+# fail without it.
+EMCC ?= emcc
+
+# The simulator is the original 240x240 SeedSigner, so the browser build pins
+# that panel in its own header instead of sharing src/ss_panel_config.h, which
+# carries whatever the local device build was last configured for. A Plus-shaped
+# 320x240 frame would not fit the screen the simulator draws.
+WASM_CONFIG := $(OUT)/wasm-include/ss_panel_config.h
+
+$(WASM_CONFIG): tools/gen_panel_config.py
+	python3 tools/gen_panel_config.py --app "$(SEEDSIGNER_APP)" \
+	  --display st7789_240x240 --out $@
+
+# MODULARIZE because the page loads this alongside Pyodide and a bare global
+# Module would collide. The WAD is not preloaded: it is nearly 30MB, it would
+# have to be re-fetched on every hard reload, and fetching it into MEMFS from
+# the wrapper costs nothing extra.
+WASM_LDFLAGS := -sMODULARIZE=1 -sEXPORT_NAME=createDoomModule \
+                -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=67108864 \
+                -sEXPORTED_FUNCTIONS=_main,_ss_doom_start,_ss_doom_button,_ss_doom_stop,_ss_doom_pending \
+                -sEXPORTED_RUNTIME_METHODS=ccall,FS
+
+$(OUT)/doom.js: $(WASM_CONFIG) $(DOOM_SRCS) $(WASM_SRCS) web/doom-run.js
+	@mkdir -p $(OUT)
+	$(EMCC) -I$(dir $(WASM_CONFIG)) $(CFLAGS) $(WASM_LDFLAGS) \
+	  -o $@ $(filter %.c,$^)
+	cp web/doom-run.js $(OUT)/doom-run.js
+
+wasm: $(OUT)/doom.js
+
+.PHONY: wasm
