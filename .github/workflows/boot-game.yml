@@ -65,7 +65,7 @@ jobs:
           path: seedsigner-app
 
       - name: unit tests
-        run: make test $(MAKE_ARGS)
+        run: make test $MAKE_ARGS
         working-directory: boot-game/doom
         env:
           MAKE_ARGS: >-
