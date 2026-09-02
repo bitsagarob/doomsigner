@@ -19,10 +19,12 @@ help()
       --pi2         Build for pi2
       --pi02w       Build for pi02w and pi3
       --pi4         Build for pi4 and pi4cmio
-  
+      --lafrite     Build for La Frite AML-S805X-AC
+
   Options:
-  -h, --help           Display a help screen and quit 
+  -h, --help           Display a help screen and quit
       --dev            Builds developer version of images
+      --smartcard      Builds with smartcard support
       --no-clean       Leave previous build, target, and output files
       --skip-repo      Skip pulling repo, assume rootfs-overlay/opt is populated with app code
       --app-repo       Build image with not official seedsigner github repo
@@ -265,6 +267,9 @@ while (( "$#" )); do
   --pi4)
     PI4_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
     ;;
+  --lafrite)
+    LAFRITE_FLAG=0; ((ARCH_CNT=ARCH_CNT+1)); shift
+    ;;
   --no-clean)
     NOCLEAN=0; shift
     ;;
@@ -276,6 +281,9 @@ while (( "$#" )); do
     ;;
   --dev)
     DEVBUILD=0; shift
+    ;;
+  --smartcard)
+    SMARTCARD=0; shift
     ;;
   --app-repo=*)
     APP_REPO=$(echo "${1}" | cut -d "=" -f2-); shift
@@ -338,6 +346,12 @@ if ! [ -z $DEVBUILD ]; then
   DEVARG="-dev"
 fi
 
+# Check for --smartcard argument to pass to build_image function
+SMARTCARDARG=""
+if ! [ -z $SMARTCARD ]; then
+  SMARTCARDARG="-smartcard"
+fi
+
 # check for custom app repo
 if ! [ -z ${APP_REPO} ]; then
   seedsigner_app_repo="${APP_REPO}"
@@ -359,30 +373,36 @@ fi
 
 # Build All Architectures
 if ! [ -z ${ALL_FLAG} ]; then
-  build_image "pi0${DEVARG}" "clean" "${SKIPREPO_ARG}"
-  build_image "pi02w${DEVARG}" "clean" "skip-repo"
-  build_image "pi2${DEVARG}" "clean" "skip-repo"
-  build_image "pi4${DEVARG}" "clean" "skip-repo"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "clean" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "clean" "skip-repo"
 fi
 
 # Build only for pi0, pi0w, and pi1
 if ! [ -z ${PI0_FLAG} ]; then
-  build_image "pi0${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi0${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # Build only for pi2
 if ! [ -z ${PI2_FLAG} ]; then
-  build_image "pi2${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi2${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi02w
 if ! [ -z ${PI02W_FLAG} ]; then
-  build_image "pi02w${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi02w${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 # build for pi4
 if ! [ -z ${PI4_FLAG} ]; then
-  build_image "pi4${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+  build_image "pi4${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
+fi
+
+# build for La Frite AML-S805X-AC. Only the smartcard configs exist for this
+# board, so --lafrite without --smartcard has no config dir to build from.
+if ! [ -z ${LAFRITE_FLAG} ]; then
+  build_image "lafrite${SMARTCARDARG}${DEVARG}" "${CLEAN_ARG}" "${SKIPREPO_ARG}"
 fi
 
 exit 0
