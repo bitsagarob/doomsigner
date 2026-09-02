@@ -5,10 +5,14 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+source="$here/src/bootgame"
 target="$here/../opt/rootfs-overlay/usr/local/bootgame/bootgame"
 
 rm -rf "$target"
 mkdir -p "$target"
-cp "$here"/src/bootgame/*.py "$target"/
+(cd "$source" && find . -name '*.py') | while IFS= read -r rel; do
+  mkdir -p "$target/$(dirname "$rel")"
+  cp "$source/$rel" "$target/$rel"
+done
 
-echo "staged $(ls -1 "$target" | wc -l) modules into ${target#"$here"/../}"
+echo "staged $(find "$target" -name '*.py' | wc -l) modules into ${target#"$here"/../}"
