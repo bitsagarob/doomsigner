@@ -7,11 +7,16 @@ export FORCE_UNSAFE_CONFIGURE=1 # Allows buildroot/tar to run as root user in do
 cur_dir_name=${PWD##*/}
 cur_dir=$(pwd)
 # Doomsigner's own app fork, so `./opt/build.sh --pi0` with no flags builds THIS
-# device rather than somebody else's. The fork tracks 3rdIteration (ShieldSigner),
-# which is what this image has always been built from; the branch adds BIP-352
-# silent payments. Override with --app-repo / --app-branch to build stock instead.
+# device rather than somebody else's. The branch adds BIP-352 silent payments on
+# top of 3rdIteration's dev, which is what this image has always been built from.
+#
+# It has to be based on dev, not on a release tag: download_app_repo() below runs
+# tools/write_versionfile.py from the app repo, and that script only exists on dev.
+# Basing the branch on SeSi-0.8.7+ShSi-B11 failed CI for exactly that reason.
+#
+# Override with --app-repo / --app-branch to build stock instead.
 seedsigner_app_repo="https://github.com/bitsagarob/seedsigner.git"
-seedsigner_app_repo_branch="feat/silent-payments"
+seedsigner_app_repo_branch="feat/bip352-silent-payments"
 
 help()
 {
