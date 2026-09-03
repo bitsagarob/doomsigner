@@ -1,0 +1,12 @@
+config BR2_PACKAGE_LIBSECP256K1
+	bool "libsecp256k1"
+	help
+	  Optimized C library for ECDSA signatures and secret/public key
+	  operations on curve secp256k1.
+
+	  Built here because embit needs it and no longer ships prebuilt
+	  binaries: embit's package explicitly excludes *.so, so without a
+	  system library it falls back to a pure-Python implementation that is
+	  far too slow to sign on a Pi Zero, and does so silently.
+
+	  https://github.com/bitcoin-core/secp256k1
