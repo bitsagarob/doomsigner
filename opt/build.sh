@@ -230,7 +230,12 @@ build_image() {
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress
   
-  seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_branch}.${config_name}.img"
+  # A branch name goes into the FILENAME, so any slash in it would be read as a
+  # directory that does not exist and the final mv fails after a full build has
+  # already succeeded. Seen for real with --app-branch=feat/bip352-silent-payments.
+  # Flatten the separators rather than rejecting the branch.
+  branch_slug="$(echo "${seedsigner_app_repo_branch}" | tr '/ ' '__')"
+  seedsigner_os_image_output="${image_dir}/seedsigner_os.${branch_slug}.${config_name}.img"
   if ! [ -z ${seedsigner_app_repo_commit_id} ]; then
     # use commit id instead of branch name if it is set
     seedsigner_os_image_output="${image_dir}/seedsigner_os.${seedsigner_app_repo_commit_id}.${config_name}.img"
