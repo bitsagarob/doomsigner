@@ -29,4 +29,23 @@ PYTHON_EMBIT_SETUP_TYPE = setuptools
 # too slow to sign on a Pi Zero and produces no error to notice.
 PYTHON_EMBIT_DEPENDENCIES = libsecp256k1
 
+# embit pins its own build tooling to exact versions:
+#
+#   requires = ["setuptools==80.9.0", "wheel==0.47.0"]
+#
+# Buildroot builds host-python packages against the setuptools and wheel it
+# already has, so those pins fail the build outright with "Missing dependencies"
+# rather than fetching anything. 0.8.0 asked for `setuptools>=42.0, wheel` and
+# built fine, which is why this only appeared on the branch.
+#
+# Relax the two constraints and nothing else. This changes how embit is BUILT,
+# never what it contains: no source file is touched, and the resulting package
+# is byte-identical to one built with the pinned tools unless setuptools itself
+# changes its output.
+define PYTHON_EMBIT_RELAX_BUILD_REQUIRES
+	$(SED) 's|"setuptools==[0-9.]*"|"setuptools"|; s|"wheel==[0-9.]*"|"wheel"|' 		$(@D)/pyproject.toml
+	grep -q '"setuptools"' $(@D)/pyproject.toml
+endef
+PYTHON_EMBIT_POST_EXTRACT_HOOKS += PYTHON_EMBIT_RELAX_BUILD_REQUIRES
+
 $(eval $(python-package))
