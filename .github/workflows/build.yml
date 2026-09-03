@@ -18,7 +18,7 @@ on:
       app_branch:
         description: 'SeedSigner app branch'
         required: false
-        default: 'feat/bip352-silent-payments'
+        default: 'dev'
       seedsigner_release_tag:
         description: 'SeedSigner app release tag (overrides app branch if set)'
         required: false
@@ -100,7 +100,7 @@ jobs:
             --smartcard
             --dev
             --app-repo=${{ inputs.app_repo || 'https://github.com/bitsagarob/seedsigner' }}
-            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'feat/bip352-silent-payments' }}
+            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
       - name: Upload image artifact

@@ -1,4 +1,18 @@
 # Building a SeedSigner SD card image
+
+> **Note for this fork (DoomSigner).** Everything below is upstream's document and
+> describes upstream's images. Two things do not carry over:
+>
+> - **The reproducible-build hash check does not apply here.** This fork builds the
+>   signing application from [bitsagarob/seedsigner](https://github.com/bitsagarob/seedsigner),
+>   which adds BIP-352 silent payments, so the image will never match a hash
+>   published on SeedSigner's releases page. That is expected, not a failure.
+> - **Clone this repo, not upstream's**, and the app-repo flags in the examples
+>   below are already the defaults in `opt/build.sh`. A bare
+>   `./opt/build.sh --pi0` builds this device.
+>
+> See the top-level [README](../README.md).
+
 Assemble the SeedSigner OS along with the SeedSigner application code into an image file that can be flashed to an SD card and run in your SeedSigner.
 <br/>
 <br/>
