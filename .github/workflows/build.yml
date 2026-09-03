@@ -14,11 +14,11 @@ on:
       app_repo:
         description: 'SeedSigner app repository URL'
         required: false
-        default: 'https://github.com/3rdIteration/seedsigner'
+        default: 'https://github.com/bitsagarob/seedsigner'
       app_branch:
         description: 'SeedSigner app branch'
         required: false
-        default: 'dev'
+        default: 'feat/silent-payments'
       seedsigner_release_tag:
         description: 'SeedSigner app release tag (overrides app branch if set)'
         required: false
@@ -99,8 +99,8 @@ jobs:
             ${{ matrix.board_flag }}
             --smartcard
             --dev
-            --app-repo=${{ inputs.app_repo || 'https://github.com/3rdIteration/seedsigner' }}
-            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
+            --app-repo=${{ inputs.app_repo || 'https://github.com/bitsagarob/seedsigner' }}
+            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'feat/silent-payments' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
       - name: Upload image artifact
