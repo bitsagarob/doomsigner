@@ -241,6 +241,49 @@ delete_unnecessary_files() {
   rm -rf ${rootfs_overlay}/opt/src/seedsigner/resources/seedsigner-translations/l10n/**/**/*.po
 }
 
+check_target_rootfs() {
+  # Assert what the build actually produced, while the target tree still exists.
+  #
+  # This has to happen here and not against the .img afterwards. The rootfs is an LZ4-compressed
+  # initramfs, so running strings over the image finds nothing and reports every library as
+  # missing, and ${build_dir} is inside the container and gone by the time a workflow could look.
+  #
+  # All three of these fail silently rather than loudly when absent, which is why they are worth
+  # asserting at all. embit falls back to a pure-Python secp256k1 and is then too slow to sign on a
+  # Pi Zero; the DNSSEC validator falls back to pure-Python ECDSA and is roughly 8x slower over a
+  # chain; and without pydnssec_prover the wallet simply never offers to check a payment name. Not
+  # one of them prints an error, so an image can be quietly worse than the last one.
+  local target="${1}/target"
+  local failed=0
+
+  if [ ! -d "${target}" ]; then
+    echo "check_target_rootfs: no target tree at ${target}, skipping"
+    return 0
+  fi
+
+  if ! ls "${target}"/usr/lib/python3*/site-packages/pydnssec_prover/validation.py >/dev/null 2>&1; then
+    echo "ERROR: pydnssec_prover is not in the target rootfs; the wallet cannot check a BIP-353 name"
+    failed=1
+  fi
+
+  if ! ls "${target}"/usr/lib/libsecp256k1.so* >/dev/null 2>&1; then
+    echo "ERROR: libsecp256k1 is not in the target rootfs; embit would fall back to pure Python"
+    failed=1
+  fi
+
+  if ! ls "${target}"/usr/lib/libcrypto.so* >/dev/null 2>&1; then
+    echo "ERROR: libcrypto is not in the target rootfs; DNSSEC ECDSA would fall back to pure Python"
+    failed=1
+  fi
+
+  if [ "${failed}" != "0" ]; then
+    echo "Refusing to publish an image that is missing what it is supposed to carry."
+    exit 1
+  fi
+
+  echo "check_target_rootfs: pydnssec_prover, libsecp256k1 and libcrypto are all present"
+}
+
 build_image() {
   # arguments: $1 - config name, $2 clean/no-clean - allows for, $3 skip-repo
 
@@ -282,6 +325,8 @@ build_image() {
   PATH="/usr/lib/ccache:${PATH}" make BR2_EXTERNAL="../${config_dir}/" O="${build_dir}" -C ./buildroot/ ${config_name}_defconfig
   cd "${build_dir}"
   PATH="/usr/lib/ccache:${PATH}" make
+
+  check_target_rootfs "${build_dir}"
   
   # if successful, mv seedsigner_os.img image to /images
   # rename to image to include branch name and config name, then compress

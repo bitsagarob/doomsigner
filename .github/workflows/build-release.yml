@@ -100,38 +100,36 @@ jobs:
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
-      # Proof that the image is what it claims to be, printed into the log where it is part of the
-      # public build record rather than something taken on trust afterwards. A release image has no
-      # dropbear and no committed key; a dev image has both, and a silent mix-up here would put a
-      # passwordless root shell on the card that holds real funds.
-      - name: Check this is a release image and carries what it should
+      # What the image carries is asserted by check_target_rootfs() inside build.sh, against the
+      # target tree, because that is the only place the question can be answered. The rootfs is an
+      # LZ4-compressed initramfs, so running strings over the .img finds nothing and cheerfully
+      # reports every library as missing; the first version of this step did exactly that and
+      # failed a perfectly good build.
+      #
+      # What is left to check here is the profile, which the filename cannot tell you: the slug in
+      # seedsigner_os.<slug>.<config>.img is the APP BRANCH, so an image built from branch "dev" is
+      # named seedsigner_os.dev.<config>.img whether or not it is a developer image. The partition
+      # label is what actually distinguishes them, and a mix-up would put a passwordless root shell
+      # and a published SSH key on the card that holds real funds.
+      - name: Check this is a release image, not a dev one
         run: |
           set -e
           img=$(ls images/seedsigner_os.*.img | head -1)
           echo "image: ${img}"
           sha256sum "${img}"
-
-          echo "--- partition labels (release is SEEDSIGNROS, dev is SEEDSIGNDEV) ---"
           file "${img}"
+
+          echo "--- partition label: release is SEEDSIGNROS, dev is SEEDSIGNDEV ---"
           if strings -a "${img}" | grep -q "SEEDSIGNDEV"; then
             echo "ERROR: this is a dev image"
             exit 1
           fi
+          if ! strings -a "${img}" | grep -q "SEEDSIGNROS"; then
+            echo "ERROR: no release label found either; do not trust this image"
+            exit 1
+          fi
+          echo "release label confirmed"
 
-          echo "--- the app and its two pinned dependencies ---"
-          if ! strings -a "${img}" | grep -q "pydnssec_prover"; then
-            echo "ERROR: the DNSSEC validator is not in the image"
-            exit 1
-          fi
-          if ! strings -a "${img}" | grep -q "libsecp256k1.so"; then
-            echo "ERROR: libsecp256k1 is not in the image, embit would fall back to pure Python"
-            exit 1
-          fi
-          if ! strings -a "${img}" | grep -q "libcrypto.so"; then
-            echo "ERROR: libcrypto is not in the image, ECDSA would fall back to pure Python"
-            exit 1
-          fi
-          echo "all three present"
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
