@@ -177,10 +177,14 @@ check_pinned_dependencies() {
   while read -r name mk var; do
     [ -z "${name}" ] && continue
 
-    local pinned
-    pinned=$(grep -oE "${name} @ [^ ]*/archive/[0-9a-f]{40}" "${requirements}" | grep -oE "[0-9a-f]{40}$" | head -1)
-    local shipped
-    shipped=$(grep -oE "^${var} = [0-9a-f]{40}" "${mk}" | grep -oE "[0-9a-f]{40}$" | head -1)
+    local pinned=""
+    local shipped=""
+    if [ -f "${requirements}" ]; then
+      pinned=$(grep -oE "${name} @ [^ ]*/archive/[0-9a-f]{40}" "${requirements}" | grep -oE "[0-9a-f]{40}$" | head -1 || true)
+    fi
+    if [ -f "${mk}" ]; then
+      shipped=$(grep -oE "^${var} = [0-9a-f]{40}" "${mk}" | grep -oE "[0-9a-f]{40}$" | head -1 || true)
+    fi
 
     if [ -z "${pinned}" ] || [ -z "${shipped}" ]; then
       echo "check_pinned_dependencies: could not read both pins for ${name}, skipping"
@@ -196,8 +200,8 @@ check_pinned_dependencies() {
       echo "check_pinned_dependencies: ${name} agrees at ${shipped}"
     fi
   done <<EOF
-embit opt/external-packages/python-embit/python-embit.mk PYTHON_EMBIT_VERSION
-pydnssec-prover opt/external-packages/python-pydnssec-prover/python-pydnssec-prover.mk PYTHON_PYDNSSEC_PROVER_VERSION
+embit ${cur_dir}/external-packages/python-embit/python-embit.mk PYTHON_EMBIT_VERSION
+pydnssec-prover ${cur_dir}/external-packages/python-pydnssec-prover/python-pydnssec-prover.mk PYTHON_PYDNSSEC_PROVER_VERSION
 EOF
 
   if [ "${failed}" != "0" ]; then
