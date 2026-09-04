@@ -1,0 +1,143 @@
+# Release-profile images, built on demand.
+#
+# build.yml passes --dev to every one of its five targets, so the only images CI has ever produced
+# are developer images: passwordless root shell, dropbear, network, and a committed SSH private key
+# in the OS fork's docs. Those are the right thing for iterating and the wrong thing to put real
+# money on, which is what the BIP-353 acceptance run needs.
+#
+# Kept separate from build.yml rather than folded into it as another matrix dimension, so the
+# pipeline that is green stays exactly as it is, and so a release build is always something
+# somebody asked for by name rather than something that happens on a push.
+name: Build SeedSigner OS (release profile)
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: 'Board to build'
+        required: true
+        type: choice
+        default: pi0-smartcard
+        options:
+          - pi0-smartcard
+          - pi02w-smartcard
+          - pi2-smartcard
+          - pi4-smartcard
+          - lafrite-smartcard
+      app_repo:
+        description: 'SeedSigner app repository URL'
+        required: false
+        default: 'https://github.com/bitsagarob/seedsigner'
+      app_branch:
+        description: 'SeedSigner app branch'
+        required: false
+        default: 'dev'
+      seedsigner_release_tag:
+        description: 'SeedSigner app release tag (overrides app branch if set)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build ${{ inputs.board }} (release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h
+
+          sudo rm -rf \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/lib/android/sdk \
+            /usr/share/dotnet
+          sudo apt-get clean
+          docker system prune --all --force || true
+
+          echo "Disk usage after cleanup:"
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ inputs.board }}-release-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ inputs.board }}-release-
+            ccache-${{ inputs.board }}-dev-
+            ccache-
+
+      - name: Create required directories
+        run: |
+          mkdir -p images
+          mkdir -p buildroot_dl
+
+      # The board flag is derived rather than carried in a matrix, because the choice input already
+      # names the profile directory and the two must not be able to disagree.
+      - name: Derive the board flag
+        id: flags
+        run: echo "board_flag=--${{ inputs.board }}" | sed 's/-smartcard//' >> "$GITHUB_OUTPUT"
+
+      # No --dev. That is the entire point of this file.
+      - name: Build ${{ inputs.board }}
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/amd64
+          SS_ARGS: >-
+            ${{ steps.flags.outputs.board_flag }}
+            --smartcard
+            --app-repo=${{ inputs.app_repo }}
+            --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch }}
+        run: docker compose up --force-recreate --build --exit-code-from build-images
+
+      # Proof that the image is what it claims to be, printed into the log where it is part of the
+      # public build record rather than something taken on trust afterwards. A release image has no
+      # dropbear and no committed key; a dev image has both, and a silent mix-up here would put a
+      # passwordless root shell on the card that holds real funds.
+      - name: Check this is a release image and carries what it should
+        run: |
+          set -e
+          img=$(ls images/seedsigner_os.*.img | head -1)
+          echo "image: ${img}"
+          sha256sum "${img}"
+
+          echo "--- partition labels (release is SEEDSIGNROS, dev is SEEDSIGNDEV) ---"
+          file "${img}"
+          if strings -a "${img}" | grep -q "SEEDSIGNDEV"; then
+            echo "ERROR: this is a dev image"
+            exit 1
+          fi
+
+          echo "--- the app and its two pinned dependencies ---"
+          if ! strings -a "${img}" | grep -q "pydnssec_prover"; then
+            echo "ERROR: the DNSSEC validator is not in the image"
+            exit 1
+          fi
+          if ! strings -a "${img}" | grep -q "libsecp256k1.so"; then
+            echo "ERROR: libsecp256k1 is not in the image, embit would fall back to pure Python"
+            exit 1
+          fi
+          if ! strings -a "${img}" | grep -q "libcrypto.so"; then
+            echo "ERROR: libcrypto is not in the image, ECDSA would fall back to pure Python"
+            exit 1
+          fi
+          echo "all three present"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: seedsigner-os-${{ inputs.board }}-release
+          path: images/seedsigner_os.*.img
+          retention-days: 14
+          if-no-files-found: error
