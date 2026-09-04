@@ -151,7 +151,59 @@ download_app_repo() {
     git clone --recurse-submodules --depth 1 -b "${seedsigner_app_repo_branch}" "${seedsigner_app_repo}" "${rootfs_overlay}/opt/" || exit
   fi
 
+  check_pinned_dependencies
+
   compile_translations_and_fonts
+}
+
+check_pinned_dependencies() {
+  # The app's requirements.txt and this repo's Buildroot packages pin the same libraries twice:
+  # requirements.txt governs a desktop or simulator checkout, the Buildroot packages govern the
+  # device image. delete_unnecessary_files() then removes requirements.txt from the rootfs, so
+  # nothing on the device records what the desktop was built against and a disagreement between
+  # the two is invisible until the hardware behaves differently from the simulator.
+  #
+  # That has already cost real time once: the pins drifted and the image shipped embit 0.8.0, so
+  # the wallet had no silent payments at all while every desktop test passed. Fail the build here
+  # instead, before spending an hour compiling the wrong thing.
+  local requirements="${rootfs_overlay}/opt/requirements.txt"
+  if [ ! -f "${requirements}" ]; then
+    echo "check_pinned_dependencies: no requirements.txt in the app checkout, skipping"
+    return 0
+  fi
+
+  local failed=0
+  # package-name-in-requirements  buildroot-makefile  make-variable
+  while read -r name mk var; do
+    [ -z "${name}" ] && continue
+
+    local pinned
+    pinned=$(grep -oE "${name} @ [^ ]*/archive/[0-9a-f]{40}" "${requirements}" | grep -oE "[0-9a-f]{40}$" | head -1)
+    local shipped
+    shipped=$(grep -oE "^${var} = [0-9a-f]{40}" "${mk}" | grep -oE "[0-9a-f]{40}$" | head -1)
+
+    if [ -z "${pinned}" ] || [ -z "${shipped}" ]; then
+      echo "check_pinned_dependencies: could not read both pins for ${name}, skipping"
+      continue
+    fi
+
+    if [ "${pinned}" != "${shipped}" ]; then
+      echo "ERROR: ${name} is pinned to two different commits."
+      echo "  requirements.txt (desktop): ${pinned}"
+      echo "  ${mk} (device):             ${shipped}"
+      failed=1
+    else
+      echo "check_pinned_dependencies: ${name} agrees at ${shipped}"
+    fi
+  done <<EOF
+embit opt/external-packages/python-embit/python-embit.mk PYTHON_EMBIT_VERSION
+pydnssec-prover opt/external-packages/python-pydnssec-prover/python-pydnssec-prover.mk PYTHON_PYDNSSEC_PROVER_VERSION
+EOF
+
+  if [ "${failed}" != "0" ]; then
+    echo "Refusing to build an image whose device and desktop pins disagree."
+    exit 1
+  fi
 }
 
 delete_unnecessary_files() {

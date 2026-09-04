@@ -1,0 +1,10 @@
+config BR2_PACKAGE_PYTHON_PYDNSSEC_PROVER
+	bool "python-pydnssec-prover"
+	help
+	  Offline DNSSEC validation of RFC 9102 proofs, in pure Python.
+
+	  This is what lets the signing app check a BIP-353 payment name
+	  on the device instead of trusting the coordinator that sent
+	  the PSBT.
+
+	  https://github.com/bitsagarob/pydnssec-prover
