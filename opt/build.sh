@@ -261,18 +261,30 @@ check_target_rootfs() {
     return 0
   fi
 
-  if ! ls "${target}"/usr/lib/python3*/site-packages/pydnssec_prover/validation.py >/dev/null 2>&1; then
+  # Look for the package directory and not for a .py file inside it. Buildroot defaults to
+  # BR2_PACKAGE_PYTHON3_PYC_ONLY, which compiles every module and then DELETES the source, so
+  # validation.py is legitimately absent from a correctly built image. Checking for it failed a
+  # build in which the package had downloaded, cross-compiled and installed exactly as intended.
+  local pydnssec
+  pydnssec=$(ls -d "${target}"/usr/lib/python3*/site-packages/pydnssec_prover 2>/dev/null | head -1 || true)
+  if [ -z "${pydnssec}" ] || [ -z "$(ls -A "${pydnssec}" 2>/dev/null)" ]; then
     echo "ERROR: pydnssec_prover is not in the target rootfs; the wallet cannot check a BIP-353 name"
+    echo "       looked under ${target}/usr/lib/python3*/site-packages/"
+    ls "${target}"/usr/lib/python3*/site-packages/ 2>/dev/null | head -40
     failed=1
+  else
+    echo "check_target_rootfs: pydnssec_prover at ${pydnssec} ($(ls -A "${pydnssec}" | wc -l) entries)"
   fi
 
   if ! ls "${target}"/usr/lib/libsecp256k1.so* >/dev/null 2>&1; then
     echo "ERROR: libsecp256k1 is not in the target rootfs; embit would fall back to pure Python"
+    ls "${target}"/usr/lib/lib*.so* 2>/dev/null | head -40
     failed=1
   fi
 
   if ! ls "${target}"/usr/lib/libcrypto.so* >/dev/null 2>&1; then
     echo "ERROR: libcrypto is not in the target rootfs; DNSSEC ECDSA would fall back to pure Python"
+    ls "${target}"/usr/lib/lib*.so* 2>/dev/null | head -40
     failed=1
   fi
 
