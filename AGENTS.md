@@ -48,6 +48,42 @@ These scripts operate on disk images produced by `genimage`. You can reproduce t
 
 See `tests/test_post_image_mtools.sh` for a working example that exercises all five post-image scripts against a synthetic image in under a second.
 
+### Boot-Import Check on a Finished Image
+
+A build goes green whenever buildroot finishes, including when the resulting image
+contains an app that cannot start. The app is cloned from its own repo while the Python
+libraries come from buildroot packages, so a module the app imports at the top of a file
+can simply be absent from the image. Nothing in the build notices, `requirements.txt` is
+stripped out of the rootfs, and the only symptom is a device that boots to a black screen.
+
+`tests/test_image_userland.py` closes that gap without a Raspberry Pi and without root:
+
+```bash
+python3 tests/test_image_userland.py images/seedsigner_os.dev_.pi0-smartcard.img
+```
+
+It reads `zImage` out of the image's FAT32 partition with mtools, unpacks the initramfs
+the kernel carries (gzip, lz4 or xz), and then imports every `seedsigner.*` module the
+image ships using **the image's own ARM python3** under `qemu-arm-static`. About 13
+seconds per image. Requires `mtools`, `cpio`, `lz4` and `qemu-user-static`; it exits 0
+with a `SKIP:` line if any of those is missing.
+
+Two behaviours worth knowing before trusting a red run:
+
+* `seedsigner.controller` is imported first, because `main.py` does. Anything that still
+  fails is retried once at the end. Several view modules break an import cycle by
+  importing each other at the bottom of the file (`tools_views.py` ends with
+  `from .gpg_views import *`), so importing one of those first fails where the device,
+  which always arrives from the other side, succeeds. A library genuinely missing from
+  the image fails both passes.
+* It proves the image is self-consistent, not that it is correct. It does not run the
+  wallet, drive the screen, or reproduce the Pi Zero's ARMv6 CPU or 512 MB of RAM.
+
+This check found `pi0`, `pi0-dev`, `pi02w`, `pi02w-dev`, `pi2`, `pi2-dev`, `pi4` and
+`pi4-dev` shipping without `python-shamir-mnemonic` while `seed_views.py` imports it at
+module scope, which takes `seedsigner.controller` down with it. Only the `-smartcard`
+profiles had the package, and only those are built in CI, so nothing had noticed.
+
 ### Custom Module Downloads & Hash Checks
 
 When a script downloads external assets:

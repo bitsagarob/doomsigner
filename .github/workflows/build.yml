@@ -103,6 +103,15 @@ jobs:
             --app-branch=${{ inputs.seedsigner_release_tag || inputs.app_branch || 'dev' }}
         run: docker compose up --force-recreate --build --exit-code-from build-images
 
+      - name: Check the image can start the wallet
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mtools cpio lz4 qemu-user-static
+          for img in images/seedsigner_os.*.img; do
+            [ -f "$img" ] || continue
+            python3 tests/test_image_userland.py "$img"
+          done
+
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
         if: success()
