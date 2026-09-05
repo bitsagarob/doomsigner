@@ -17,6 +17,7 @@ Requires mtools, cpio and qemu-arm-static. Skips (exit 0) if any is missing, the
 same way tests/test_post_image_mtools.sh does.
 """
 
+import glob
 import os
 import re
 import shutil
@@ -224,16 +225,18 @@ for name, kind, message in failed:
         print("BROKEN\t%s\t%s: %s" % (name, type(exc).__name__, str(exc)[:160]))
 """
 
-# embit falls back to a pure-Python secp256k1 if the native library is missing.
-# The wallet still works and takes minutes to sign on an ARM1176, so assert the
-# ctypes binding is the one that loads.
-NATIVE_PROBE = """
-try:
-    from embit.util import ctypes_secp256k1
-    print("NATIVE\\tok")
-except Exception as exc:
-    print("NATIVE\\t%s: %s" % (type(exc).__name__, exc))
-"""
+# embit falls back to a pure-Python secp256k1 when the native library is
+# missing, and the wallet then still works while taking minutes to sign on an
+# ARM1176. So the library has to be in the image.
+#
+# This checks the file is present, NOT that embit resolves it. Resolution is the
+# better test and cannot be run honestly from here: embit calls
+# ctypes.util.find_library, which shells out to /sbin/ldconfig, and under
+# qemu-user a subprocess path resolves against the host filesystem rather than
+# the image, so the answer would describe this machine and not the device.
+# Whether find_library succeeds on a rootfs carrying no /etc/ld.so.cache is a
+# real open question that needs a device or full-system emulation to settle.
+NATIVE_LIBRARIES = ("libsecp256k1.so", "libcrypto.so")
 
 
 def main():
@@ -262,16 +265,20 @@ def main():
 
         broken = [line.split("\t") for line in result.stdout.splitlines()
                   if line.startswith("BROKEN")]
-        native = run_in_image(rootfs, NATIVE_PROBE).stdout.strip()
+        missing = [lib for lib in NATIVE_LIBRARIES
+                   if not glob.glob(os.path.join(rootfs, "usr", "lib", lib + "*"))]
 
         for _, name, message in broken:
             print(f"  BROKEN  {name}  {message}")
-        if not native.endswith("ok"):
-            print(f"  BROKEN  embit native secp256k1  {native.split(chr(9))[-1]}")
+        for lib in missing:
+            print(f"  MISSING  {lib} is not in the image; crypto would fall back "
+                  "to pure python and signing would crawl")
 
-        if broken or not native.endswith("ok"):
+        if broken:
             fail(f"{len(broken)} module(s) in the image cannot be imported — "
                  "this image boots to a black screen")
+        if missing:
+            fail(f"{len(missing)} native librar(y/ies) missing from the image")
 
         print(f"PASS: every app module imports inside {os.path.basename(image)}")
     finally:
