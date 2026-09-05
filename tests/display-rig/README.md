@@ -78,6 +78,15 @@ A 2-of-3 MuSig2 round from `tests/data/musig2_psbts.json` walks as:
 (`UR:CRYPTO-PSBT/1-54/...`), so a coordinator can read what the device displayed
 without a camera pointed at anything.
 
+`flow_walk.py normal` walks an ordinary spend from the corpus for comparison:
+
+    PSBTOverviewView -> PSBTMathView -> PSBTAddressDetailsView ->
+    PSBTChangeDetailsView -> PSBTFinalizeView -> PSBTSignedQRDisplayView
+
+So MuSig2 costs one screen and one extra pass, and nothing else. The round
+screen reads "Step 1 of 2 -- Not signed yet. Send this back, then scan it
+again."; an ordinary spend reaches its QR the first time through.
+
 ## What it does not prove
 
 It runs the app's Python on the host's CPU with the host's CPython. It is not a

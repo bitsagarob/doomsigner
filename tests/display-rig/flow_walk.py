@@ -52,6 +52,11 @@ def keep_pressing(stop, button="SELECT", every=2.0):
         press(button)
 
 
+MULTISIG_MNEMONIC = ("model ensure search plunge galaxy firm exclude brain "
+                     "satoshi meadow cable roast")
+MULTISIG_DESCRIPTOR = None  # filled from the fixture module when walking multisig
+
+
 def load_fixture():
     path = "/app/tests/data/musig2_psbts.json"
     with open(path) as handle:
@@ -69,15 +74,39 @@ def main():
     from embit.psbt import PSBT
     from seedsigner.models.psbt_parser import PSBTParser
 
-    seed = Seed(mnemonic=data["mnemonics"]["A"].split())
+    if which == "normal":
+        # An ordinary well-formed spend: the same review path, signed in one pass.
+        sys.path.insert(0, "/app/tests")
+        seed = Seed(mnemonic=("abandon " * 11 + "about").split())
+        with open("/app/tests/data/psbt_test_suite/NORMAL-1_p2wpkh.psbt", "rb") as fh:
+            psbt_b64 = fh.read()
+        descriptor = None
+        network = SettingsConstants.MAINNET
+    elif which == "multisig":
+        # Today's multisig: the same review path with no MuSig2 rounds in it.
+        sys.path.insert(0, "/app/tests")
+        from psbt_testing_util import PSBTTestData as T
+        seed = Seed(mnemonic=MULTISIG_MNEMONIC.split())
+        psbt_b64 = T.MULTISIG_NATIVE_SEGWIT_1_INPUT
+        descriptor = T.MULTISIG_NATIVE_SEGWIT_DESCRIPTOR
+        network = SettingsConstants.TESTNET
+    else:
+        seed = Seed(mnemonic=data["mnemonics"]["A"].split())
+        psbt_b64 = data["psbt_round_one"]
+        descriptor = None
+        network = SettingsConstants.REGTEST
     controller.storage.set_pending_seed(seed)
     controller.storage.finalize_pending_seed()
     controller.psbt_seed = seed
 
-    psbt = PSBT.from_string(data["psbt_round_one"])
+    if descriptor:
+        from embit.descriptor import Descriptor
+        controller.multisig_wallet_descriptor = Descriptor.from_string(descriptor)
+    psbt = (PSBT.parse(psbt_b64) if isinstance(psbt_b64, bytes)
+            else PSBT.from_string(psbt_b64))
     controller.psbt = psbt
-    controller.psbt_parser = PSBTParser(
-        psbt, seed=seed, network=SettingsConstants.REGTEST)
+    settings.set_value(SettingsConstants.SETTING__NETWORK, network)
+    controller.psbt_parser = PSBTParser(psbt, seed=seed, network=network)
     print(f"psbt loaded: {len(psbt.inputs)} in, {len(psbt.outputs)} out", flush=True)
 
     from seedsigner.views import psbt_views
