@@ -1,4 +1,9 @@
-# Display rig — screenshots from the real driver, with no Raspberry Pi
+# The Virtual HAT — screenshots from the real driver, with no Raspberry Pi
+
+The kernel module pretends to be the Waveshare 1.3" hat: SPI display, data/command
+line, buttons on the right pins. The app cannot tell the difference, and we record
+what it sends. It is a hat, not a Pi, which is also the shortest way to say what it
+cannot tell you.
 
 SeedSigner is its own display driver. `ST7789.py` opens `/dev/spidev0.0`, sets
 40 MHz, and pushes RGB565 down the wire while toggling a data/command line.
@@ -32,6 +37,7 @@ controller and a gpiochip that pretend to be hardware.
 | `ss_display_capture.c` | kernel module: fake SPI controller + 32-line gpiochip, records every message |
 | `decode_st7789.py` | replays a capture through the panel's state machine, writes a PNG (standard library only) |
 | `Makefile` | out-of-tree build against a UML kernel tree |
+| `flow_walk.py` | drives a signing flow inside the sandbox and captures every screen |
 
 ## Why the app needs no changes
 
@@ -54,6 +60,23 @@ pixel data.
 
 Press a button by writing two bytes, `[line, level]`, to `/dev/ss_spicap`.
 Buttons idle high, matching the hat's pull-ups, so pressing means writing a 0.
+
+## Walking a whole flow
+
+`flow_walk.py` follows the app's own `Destination` chain while a thread taps
+SELECT on the real gpiochip, so the screens and their order are the device's
+rather than a script's idea of them. `decode_st7789.py --split` then writes one
+PNG per completed frame.
+
+A 2-of-3 MuSig2 round from `tests/data/musig2_psbts.json` walks as:
+
+    PSBTOverviewView -> PSBTNoChangeWarningView -> PSBTMathView ->
+    PSBTAddressDetailsView -> PSBTFinalizeView -> PSBTMusig2RoundView ->
+    PSBTSignedQRDisplayView
+
+68 frames. The QR at the end decodes out of the captured pixels with pyzbar
+(`UR:CRYPTO-PSBT/1-54/...`), so a coordinator can read what the device displayed
+without a camera pointed at anything.
 
 ## What it does not prove
 

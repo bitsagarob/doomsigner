@@ -47,6 +47,8 @@ class Panel:
         self.x1 = width - 1
         self.y1 = height - 1
         self.cursor = None
+        self.frames = []
+        self.frame_bytes = 0
         self.pending = bytearray()
         self.args = []
         self.cmd = None
@@ -61,6 +63,7 @@ class Panel:
         if code == CMD_RAMWR:
             self.cursor = (self.x0, self.y0)
             self.pending = bytearray()
+            self.frame_bytes = 0
         elif code == CMD_INVON:
             # Recorded, deliberately not applied. INVON is part of the normal
             # init for this IPS panel: its glass is wired inverted, so turning
@@ -103,6 +106,12 @@ class Panel:
     def pixels_in(self, payload):
         self.pending.extend(payload)
         self.writes += len(payload)
+        self.frame_bytes += len(payload)
+        # A full-screen RAMWR is one finished screen. Keeping each one lets a
+        # single boot walk a flow and hand back a picture per screen.
+        if self.frame_bytes >= self.width * self.height * 2:
+            self.frame_bytes = 0
+            self._pending_snapshot = True
         # RGB565, high byte first: ST7789.py builds "BGR;16" then byteswaps.
         count = len(self.pending) // 2
         if not count:
@@ -130,6 +139,9 @@ class Panel:
                 if y > self.y1:
                     y = self.y0
         self.cursor = (x, y)
+        if getattr(self, "_pending_snapshot", False):
+            self._pending_snapshot = False
+            self.frames.append(bytes(self.pixels))
 
 
 # What the driver's init sets for the Waveshare 1.3" hat. MADCTL and inversion
@@ -217,8 +229,8 @@ def write_png(path, width, height, rgb):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("usage: decode_st7789.py capture.bin out.png", file=sys.stderr)
+    if len(sys.argv) not in (3, 4):
+        print("usage: decode_st7789.py capture.bin out.png [--split]", file=sys.stderr)
         return 2
 
     with open(sys.argv[1], "rb") as handle:
@@ -226,7 +238,13 @@ def main():
 
     panel, events = replay(stream)
 
-    write_png(sys.argv[2], panel.width, panel.height, panel.pixels)
+    if len(sys.argv) == 4 and sys.argv[3] == "--split":
+        base = sys.argv[2][:-4] if sys.argv[2].endswith(".png") else sys.argv[2]
+        for index, frame in enumerate(panel.frames, 1):
+            write_png(f"{base}-{index:02d}.png", panel.width, panel.height, frame)
+        print(f"wrote {len(panel.frames)} frame(s) as {base}-NN.png")
+    else:
+        write_png(sys.argv[2], panel.width, panel.height, panel.pixels)
 
     print(f"captured {len(stream)} bytes, {panel.writes} pixel bytes written")
     print(f"MADCTL 0x{panel.madctl:02X}  COLMOD 0x{panel.colmod:02X}  "
