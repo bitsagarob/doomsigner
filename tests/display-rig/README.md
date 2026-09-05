@@ -87,6 +87,14 @@ So MuSig2 costs one screen and one extra pass, and nothing else. The round
 screen reads "Step 1 of 2 -- Not signed yet. Send this back, then scan it
 again."; an ordinary spend reaches its QR the first time through.
 
+## Injecting a card
+
+Patch `seedkeeper_utils.init_satochip`, do not set `controller.Satochip_Connector`.
+The card-offer screen calls `init_satochip` itself, so setting the connector no
+longer reaches it and the session falls back to holding the nonce in memory
+without saying so. That is a quiet failure: the flow completes, the screens are
+identical, and only a counter on the fake card shows the card was never used.
+
 ## What it does not prove
 
 It runs the app's Python on the host's CPU with the host's CPython. It is not a
