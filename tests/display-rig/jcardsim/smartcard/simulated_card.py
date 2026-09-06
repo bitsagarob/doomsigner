@@ -66,12 +66,29 @@ class _Applet:
 
 
 _card = None
+_live = []
 
 
 def current_card():
     global _card
     if _card is None:
         _card = _Applet()
+    return _card
+
+
+def new_card():
+    """Start a fresh applet instance and make it the card in the reader.
+
+    Two signers are two people with two cards, and a MuSig2 nonce is worthless
+    if both sides mint from the same one. Each call spawns its own jCardSim
+    process, so the cards share nothing.
+    """
+    # The previous applet is left running on purpose. A connection binds to the
+    # card that was current when it was made, so closing the old one here would
+    # kill the first signer's card the moment the second was provisioned.
+    global _card
+    _card = _Applet()
+    _live.append(_card)
     return _card
 
 
