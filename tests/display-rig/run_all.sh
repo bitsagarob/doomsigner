@@ -181,4 +181,5 @@ echo "display layer: 7 probe(s) ran (verdicts not checked here -- see release_ga
 echo "applet layer:  $applet_ran"
 [ "$applet_ran" = yes ] || echo "PARTIAL PASS: the applet was not exercised"
 echo "everything in $OUT"
-{ echo "display layer: ran"; echo "applet layer: $applet_ran"; } >> "$OUT/provenance.txt"
+{ echo "display layer: 7 probe(s) ran, verdicts not checked"
+  echo "applet layer: $applet_ran"; } >> "$OUT/provenance.txt"

@@ -34,8 +34,12 @@ export JCARDSIM_JAR="${JCARDSIM_JAR:-/home/rob/apps/_scratch/jctools/jcardsim/ta
 export APPLET_SRC="${APPLET_SRC:-/home/rob/apps/_scratch/applet-src/SeedKeeper-Applet}"
 
 problems=()
+checks=()
 note() { echo "  $1"; }
 bad()  { echo "  REFUSED  $1"; problems+=("$1"); }
+# Recorded as well as printed: GATE.txt is the evidence that travels with the
+# release, and a verdict with no list of what was checked is not evidence.
+pass() { echo "  ok   $1"; checks+=("ok   $1"); }
 
 echo "release gate"
 echo "============"
@@ -120,7 +124,7 @@ cp /tmp/gate-pass.txt "$OUT/run_all.log"
 # worth being noisy about.
 check_said() {  # file, description, pattern
   if grep -qE "$3" "$OUT/$1.txt" 2>/dev/null; then
-    note "ok   $2"
+    pass "$2"
   else
     bad "$1 never said: $2"
   fi
@@ -165,7 +169,7 @@ for capture in offer refusal flow-musig2 flow-normal; do
   if [ "$count" -eq 0 ]; then
     bad "$capture decoded to no screens: the capture is empty or the decode failed"
   else
-    note "ok   $capture: $count screen(s)"
+    pass "$capture: $count screen(s)"
   fi
 done
 
@@ -176,7 +180,7 @@ CRASHED="$(grep -lE "^Traceback|Segmentation fault|Kernel panic" "$OUT"/*.txt 2>
 if [ -n "$CRASHED" ]; then
   bad "something crashed in: $CRASHED"
 else
-  note "ok   nothing crashed"
+  pass "nothing crashed"
 fi
 
 # ---- 4. the verdict --------------------------------------------------------
@@ -188,6 +192,8 @@ fi
   echo "app describe: $DESCRIBE"
   echo "ref asked for: ${WANT_REF:-none}"
   echo "screens: $SCREENS"
+  echo
+  [ ${#checks[@]} -eq 0 ] || printf '  %s\n' "${checks[@]}"
   echo
   if [ ${#problems[@]} -eq 0 ]; then
     echo "MACHINE VERDICT: every automated check passed."
