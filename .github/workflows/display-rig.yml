@@ -84,17 +84,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y flex bison libssl-dev libelf-dev bc
 
-      # A prepared tree is headers, generated files and host tools -- not a built
-      # kernel. Preparing one is the whole cost here; compiling the module
-      # against it takes about two seconds.
-      - name: Restore the prepared kernel tree
+      # modules_prepare is not enough: it produces headers and host tools but no
+      # Module.symvers, so modpost cannot resolve a single kernel symbol and
+      # every out-of-tree module fails to link. A built kernel is needed, and
+      # since it is the whole cost of this job it is cached. Compiling the module
+      # against a cached tree takes about two seconds.
+      - name: Restore the built kernel tree
         id: kernel-cache
         uses: actions/cache@v4
         with:
           path: ~/kernel/linux-${{ env.KERNEL }}
-          key: uml-prepared-${{ env.KERNEL }}-v1
+          key: uml-built-${{ env.KERNEL }}-v2
 
-      - name: Prepare a User-Mode Linux tree
+      - name: Build a User-Mode Linux kernel
         if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
@@ -111,8 +113,9 @@ jobs:
             --enable SPI --enable SPI_MASTER --module SPI_SPIDEV \
             --enable GPIOLIB --enable GPIO_CDEV --enable GPIO_CDEV_V1
           make ARCH=um olddefconfig
-          make ARCH=um modules_prepare -j"$(nproc)"
-          echo "prepared tree: $(du -sh . | cut -f1)"
+          time make ARCH=um -j"$(nproc)"
+          test -f Module.symvers
+          echo "built tree: $(du -sh . | cut -f1)"
 
       - name: Compile ss_display_capture.ko
         run: |
