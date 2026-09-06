@@ -23,9 +23,34 @@ OUT="$UML/out/pass-$STAMP"
 [ -x "$UML/run.sh" ] || { echo "no UML sandbox at $UML (see README)"; exit 1; }
 
 mkdir -p "$OUT"
+
+# Say what is actually being tested, loudly. A worktree on a detached HEAD does
+# not move when its branch does, so a pass against one silently reports today's
+# date over yesterday's code. That is the kind of quiet wrongness this rig
+# exists to catch, and it would be embarrassing to ship it in the rig itself.
+REPO_DIR="$(cd "$APP_SRC/.." && pwd)"
+GIT_DESC="$(git -C "$REPO_DIR" log --oneline -1 2>/dev/null || echo 'not a git tree')"
+GIT_REF="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+GIT_DIRTY="$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | wc -l)"
+
 echo "app source : $APP_SRC"
+echo "commit     : $GIT_DESC"
+echo "ref        : $GIT_REF"
 echo "results    : $OUT"
+if [ "$GIT_REF" = "HEAD" ]; then
+  echo
+  echo "  !! detached HEAD: this tree will NOT follow its branch."
+  echo "     A later pass here tests this same commit no matter what was pushed."
+fi
+if [ "$GIT_DIRTY" != "0" ]; then
+  echo "  !! $GIT_DIRTY uncommitted file(s): this pass is not reproducible from the commit."
+fi
 echo
+
+{ echo "app source : $APP_SRC"
+  echo "commit     : $GIT_DESC"
+  echo "ref        : $GIT_REF"
+  echo "uncommitted: $GIT_DIRTY file(s)"; } > "$OUT/provenance.txt"
 
 # Stage the app and the fixtures the probes read.
 STAGE="$UML/appsrc-pass"
