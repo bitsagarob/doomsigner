@@ -5,6 +5,22 @@
 import json, os, sys
 from embit import bip32, bip39
 from embit.psbt import PSBT
+import types
+
+# The app's test helpers import pytest at module scope, and these demos are not
+# run by pytest. Stub the decorators rather than make a test runner a runtime
+# dependency of a demo: it was installed here and absent on a CI runner, which
+# is exactly the difference that should not decide whether this works.
+_stub = types.ModuleType("pytest")
+_stub.fixture = lambda *a, **k: (a[0] if a and callable(a[0]) else (lambda fn: fn))
+_stub.mark = types.SimpleNamespace(
+    parametrize=lambda *a, **k: (lambda fn: fn),
+    skipif=lambda *a, **k: (lambda fn: fn),
+    skip=lambda *a, **k: (lambda fn: fn))
+_stub.raises = lambda *a, **k: None
+_stub.skip = lambda *a, **k: None
+sys.modules.setdefault("pytest", _stub)
+
 from provision import connect
 from seedsigner.helpers import musig2_card as mc, musig2_psbt as mp
 
