@@ -1,0 +1,121 @@
+# The half of the Virtual HAT that a hosted runner can check.
+#
+# The rig has two halves that must agree. The kernel module records SPI traffic
+# and the D/C line; decode_st7789.py replays that stream through the panel's
+# state machine and writes a PNG. Getting a real screen out of it needs a
+# User-Mode Linux sandbox and the app running inside it, which is a local tool
+# (tests/display-rig/run_all.sh) and stays one.
+#
+# What runs here is everything that does not need the sandbox:
+#
+#   the decoder    hand-built captures with known answers, and a mutation run
+#                  proving those checks fail when the decoder is broken
+#   the module     does the kernel module still compile for the kernel we run it
+#                  on? Two seconds, given a prepared tree, which is cached.
+#
+# On every push rather than weekly: it takes seconds, and a decoder fault is
+# silent -- it writes a plausible wrong PNG rather than crashing -- so it should
+# be caught by the commit that causes it.
+name: Display rig
+
+on:
+  push:
+    paths:
+      - 'tests/display-rig/**'
+      - '.github/workflows/display-rig.yml'
+  pull_request:
+    paths:
+      - 'tests/display-rig/**'
+      - '.github/workflows/display-rig.yml'
+  workflow_dispatch:
+    inputs:
+      app_ref:
+        description: 'seedsigner app ref to check the driver against'
+        required: false
+        default: 'dev'
+
+env:
+  KERNEL: 6.12.48
+  # sha256 of linux-6.12.48.tar.xz as published on cdn.kernel.org, and the
+  # tarball this rig has been developed against since day one.
+  KERNEL_SHA256: 5bf9eb676751bf48978e38363c772298b41a75336d5038ed6d37012399471db2
+
+jobs:
+  decoder:
+    name: The decoder against the capture format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the rig
+        uses: actions/checkout@v4
+
+      # One check reads the app's own ST7789 driver, to catch the driver and the
+      # decoder drifting apart on MADCTL. Without the app it skips rather than
+      # passes quietly.
+      - name: Check out the wallet
+        uses: actions/checkout@v4
+        with:
+          repository: bitsagarob/seedsigner
+          ref: ${{ inputs.app_ref || 'dev' }}
+          path: app
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: The decoder reads what the module writes
+        env:
+          APP_SRC: ${{ github.workspace }}/app/src
+        run: python3 tests/display-rig/test_decode_st7789.py
+
+      - name: Those checks fail when the decoder is broken
+        env:
+          APP_SRC: ${{ github.workspace }}/app/src
+        run: python3 tests/display-rig/test_decode_mutations.py
+
+  module:
+    name: The kernel module still compiles
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the rig
+        uses: actions/checkout@v4
+
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flex bison libssl-dev libelf-dev bc
+
+      # A prepared tree is headers, generated files and host tools -- not a built
+      # kernel. Preparing one is the whole cost here; compiling the module
+      # against it takes about two seconds.
+      - name: Restore the prepared kernel tree
+        id: kernel-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/kernel/linux-${{ env.KERNEL }}
+          key: uml-prepared-${{ env.KERNEL }}-v1
+
+      - name: Prepare a User-Mode Linux tree
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/kernel && cd ~/kernel
+          curl -fsSL -o linux.tar.xz \
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL}.tar.xz"
+          echo "${KERNEL_SHA256}  linux.tar.xz" | sha256sum -c -
+          tar xf linux.tar.xz && rm linux.tar.xz
+          cd "linux-${KERNEL}"
+          make ARCH=um defconfig
+          # The options the module needs to exist at all: it registers an SPI
+          # controller and a gpiochip and is built as a module.
+          ./scripts/config --enable MODULES --enable MODULE_UNLOAD \
+            --enable SPI --enable SPI_MASTER --module SPI_SPIDEV \
+            --enable GPIOLIB --enable GPIO_CDEV --enable GPIO_CDEV_V1
+          make ARCH=um olddefconfig
+          make ARCH=um modules_prepare -j"$(nproc)"
+          echo "prepared tree: $(du -sh . | cut -f1)"
+
+      - name: Compile ss_display_capture.ko
+        run: |
+          make -C tests/display-rig KSRC="$HOME/kernel/linux-${KERNEL}"
+          test -f tests/display-rig/ss_display_capture.ko
+          modinfo tests/display-rig/ss_display_capture.ko

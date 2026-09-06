@@ -1,2 +1,12 @@
 __pycache__/
 *.pyc
+
+# Out-of-tree module build output. `make KSRC=...` writes these next to the
+# source; only the .c and the Makefile are worth keeping.
+*.ko
+*.o
+*.mod
+*.mod.c
+*.symvers
+*.order
+.*.cmd
