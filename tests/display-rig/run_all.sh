@@ -65,6 +65,22 @@ echo
   echo "ref        : $GIT_REF"
   echo "uncommitted: $GIT_DIRTY file(s)"; } > "$OUT/provenance.txt"
 
+# The applet is as load-bearing as the app now, so it is named the same way. A
+# provenance file that describes only some of what a pass depended on invites
+# the reader to assume it describes all of it.
+if [ -n "${APPLET_SRC:-}" ] && [ -d "${APPLET_SRC}/.git" ]; then
+  APPLET_DESC="$(git -C "$APPLET_SRC" log --oneline -1 2>/dev/null)"
+  APPLET_REF="$(git -C "$APPLET_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  APPLET_DIRTY="$(git -C "$APPLET_SRC" status --porcelain 2>/dev/null | wc -l)"
+  echo "applet     : $APPLET_DESC"
+  echo "applet ref : $APPLET_REF"
+  [ "$APPLET_REF" = "HEAD" ] && echo "  !! applet tree is on a detached HEAD"
+  [ "$APPLET_DIRTY" != "0" ] && echo "  !! applet tree has $APPLET_DIRTY uncommitted file(s)"
+  { echo "applet     : $APPLET_DESC"
+    echo "applet ref : $APPLET_REF"
+    echo "applet uncommitted: $APPLET_DIRTY file(s)"; } >> "$OUT/provenance.txt"
+fi
+
 # Stage the app and the fixtures the probes read.
 # Scratch is regenerated, never edited: the jcardsim pieces are staged from the
 # repo too, so the sandbox holds no source anyone could change by accident.

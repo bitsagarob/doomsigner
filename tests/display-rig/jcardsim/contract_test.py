@@ -10,8 +10,21 @@ imitation that had quietly become wrong.
 This runs the same sequence against both and compares what comes back. It does
 not compare byte for byte: a nonce is random, so two cards asked for one will
 answer differently and should. What must match is the shape and the rules --
-the sizes, the status words, and above all the refusals, since the refusals are
-the security property.
+the sizes, and above all the refusals, since the refusals are the security
+property.
+
+What it binds, exactly, so the name does not promise more than it checks:
+
+    both rounds reach the same stage, and produce the same signature count
+    a replayed sealed nonce is refused, with the same error
+    a sealed nonce whose bytes were edited is refused
+    the pool is refilled to the same depth, with the same sized entries
+    the sealed nonce is the same size
+
+What it does not bind: behaviour under an unverified PIN, the status word of
+every error path, the internal format of a seal, and anything about eviction
+once more nonces are outstanding than the card tracks. Those are worth adding;
+they are not covered today.
 
     JAVA_HOME=... JCARDSIM_JAR=... APPLET_SRC=... \
     PYTHONPATH=<this dir>:<seedsigner-sp/src>:<seedsigner-sp/tests> \
@@ -76,12 +89,29 @@ def exercise(session, root, psbt_b64, other_nonce_key, other_nonce):
     except Exception as exc:
         refusal = type(exc).__name__
 
+    # A seal whose bytes were edited must be refused before it is opened, and
+    # refused differently from one that was merely already spent: "someone
+    # tampered with this" and "you already used it" are different answers.
+    tampered = PSBT.from_string(round_one)
+    tampered.inputs[0].unknown[other_nonce_key] = other_nonce
+    pool = mc._pooled(tampered, role_for(tampered, root))
+    if pool:
+        value = bytearray(tampered.inputs[0].unknown[pool[0]])
+        value[-1] ^= 0xFF
+        tampered.inputs[0].unknown[pool[0]] = bytes(value)
+    try:
+        session().advance(tampered, root)
+        tamper_outcome = "accepted"
+    except Exception as exc:
+        tamper_outcome = type(exc).__name__
+
     pooled = mc._pooled(psbt2, role_for(psbt2, root))
     return {
         "round one stage": first.stage,
         "round two stage": second.stage,
         "partial signatures": signatures,
         "replay outcome": refusal,
+        "edited seal outcome": tamper_outcome,
         "pooled nonces left": len(pooled),
         "pooled nonce size": len(psbt2.inputs[0].unknown[pooled[0]]) if pooled else 0,
     }
@@ -132,7 +162,9 @@ def main():
 
     print("\nthe Python double against the real applet:", flush=True)
     for field in fake:
-        compare(field, fake[field], real[field])
+        # Show the agreed value, not just that they agree: two cards that both
+        # wrongly accepted something would also "match".
+        compare(field, fake[field], real[field], detail=f"both: {fake[field]!r}")
 
     if failures:
         print(f"\nFAIL: the fake and the applet disagree on {len(failures)}: "
