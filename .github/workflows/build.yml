@@ -5,6 +5,14 @@ on:
     branches:
       - main
       - dev
+    # A five-board buildroot run costs about two hours per board. Committing a
+    # test script should not start one, and ten of them in a day starved the
+    # queue so a workflow that took minutes could not get a runner at all.
+    paths-ignore:
+      - 'tests/**'
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/applet-contract.yml'
   pull_request:
     branches:
       - main

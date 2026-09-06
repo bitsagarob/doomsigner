@@ -69,6 +69,16 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/martinpaljak/oracle_javacard_sdks.git sdks
           git clone --depth 1 https://github.com/licel/jcardsim.git jcardsim
+          # jcardsim's pom installs Oracle's api_classic.jar during the initialize
+          # phase, but maven resolves a project's dependencies before running the
+          # lifecycle, so the build depends on a side effect of itself. That is
+          # tolerated by maven 3.8 and not by 3.9, which is what runners ship, so
+          # a build that worked locally failed here. Install it first and the
+          # ordering stops mattering.
+          mvn -q install:install-file \
+            -Dfile="$GITHUB_WORKSPACE/sdks/jc305u4_kit/lib/api_classic.jar" \
+            -DgroupId=oracle.javacard -DartifactId=api_classic \
+            -Dversion=3.0.5 -Dpackaging=jar
           cd jcardsim
           JC_CLASSIC_HOME="$GITHUB_WORKSPACE/sdks/jc305u4_kit" mvn -q -DskipTests package
           test -f target/jcardsim-3.0.5-SNAPSHOT.jar

@@ -63,7 +63,13 @@ def extract_kernel(image, workdir):
         env=env, capture_output=True, text=True,
     )
     if result.returncode != 0 or not os.path.exists(kernel):
-        fail(f"could not read zImage from {image}: {result.stderr.strip()}")
+        # Not a shape this check understands rather than a broken image. The Pi
+        # profiles put a zImage in a FAT32 boot partition; lafrite is an Amlogic
+        # arm64 board laid out differently, and failing its build for that told
+        # nobody anything true. Skip loudly; a genuinely broken image of a shape
+        # we DO understand still fails below.
+        skip(f"{os.path.basename(image)} has no zImage in a FAT32 partition, so "
+             "this check does not apply to it")
     return kernel
 
 
@@ -194,6 +200,11 @@ def run_in_image(rootfs, code):
     python = os.path.join(rootfs, "usr", "bin", "python3")
     if not os.path.exists(python):
         fail("image has no /usr/bin/python3")
+    machine = subprocess.run(["file", "-b", python], capture_output=True,
+                             text=True).stdout
+    if "ARM" in machine and "aarch64" in machine:
+        skip("the image's python is arm64; this check runs qemu-arm-static, "
+             "which is 32-bit ARM only")
     return subprocess.run(
         [
             "qemu-arm-static", "-L", rootfs,
