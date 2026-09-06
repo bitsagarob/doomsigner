@@ -5,6 +5,15 @@
 #   ./run_all.sh /home/rob/apps/seedsigner-sp/src        # dev
 #   ./run_all.sh /home/rob/apps/_scratch/ss-card/src     # a branch worktree
 #
+# Two layers, and a pass says which of them it ran:
+#
+#   display   the app's real driver on a real kernel SPI bus, inside UML
+#   applet    the real SeedKeeper applet in jCardSim behind real pysatochip
+#
+# The applet layer needs JAVA_HOME, JCARDSIM_JAR and APPLET_SRC. Without them it
+# is skipped loudly and the summary says the pass was partial, because a run that
+# quietly covers less than it claims is worse than one that fails.
+#
 # Existed because a "full test" was several hand-run scripts, which meant it was
 # run less often than it should have been and slightly differently each time.
 #
@@ -113,6 +122,34 @@ run_one refusal     shoot_musig2_refusal.py  yes
 run_one flow-musig2 "flow_walk.py musig2"    yes
 run_one flow-normal "flow_walk.py normal"    yes
 
-echo "screens:"
-find "$OUT" -name 's-*.png' | wc -l
+# --- the applet layer -------------------------------------------------------
+# These need no kernel devices, only python and a JVM, so they run here rather
+# than inside the sandbox.
+applet_ran=no
+if [ -n "${JCARDSIM_JAR:-}" ] && [ -n "${APPLET_SRC:-}" ] && [ -n "${JAVA_HOME:-}" ]; then
+  if [ ! -d "$APPLET_SRC/test/classes" ]; then
+    echo "--- applet layer: SKIPPED, $APPLET_SRC/test/classes missing"
+    echo "    compile AppletPipe first: $APPLET_SRC/test/run.sh"
+  else
+    applet_ran=yes
+    export PYTHONPATH="$RIG/jcardsim:$APP_SRC:$(dirname "$APP_SRC")/tests"
+    for probe in contract_test demo1_nonce_vault demo2_silent_payment; do
+      echo "--- applet: $probe"
+      timeout 600 python3 "$RIG/jcardsim/$probe.py" 2>&1 \
+        | grep -vE "RuntimeWarning|shadowing|remove this package|from smartcard" \
+        > "$OUT/applet-$probe.txt"
+      sed 's/^/    /' "$OUT/applet-$probe.txt" | tail -10
+      echo
+    done
+  fi
+else
+  echo "--- applet layer: SKIPPED, set JAVA_HOME, JCARDSIM_JAR and APPLET_SRC"
+  echo "    the real card is not covered by this pass"
+fi
+
+echo "screens:  $(find "$OUT" -name 's-*.png' | wc -l)"
+echo "display layer: ran"
+echo "applet layer:  $applet_ran"
+[ "$applet_ran" = yes ] || echo "PARTIAL PASS: the applet was not exercised"
 echo "everything in $OUT"
+{ echo "display layer: ran"; echo "applet layer: $applet_ran"; } >> "$OUT/provenance.txt"

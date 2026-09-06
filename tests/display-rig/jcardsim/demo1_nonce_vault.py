@@ -2,16 +2,21 @@
 
 # Run with PYTHONPATH=<this dir>:<seedsigner-sp/src> and JCARDSIM_JAR, APPLET_SRC,
 # JAVA_HOME set. See README.md.
-import json, sys
+import json, os, sys
 from embit import bip32, bip39
 from embit.psbt import PSBT
 from provision import connect
 from seedsigner.helpers import musig2_card as mc, musig2_psbt as mp
 
-sys.path.insert(0, "/home/rob/apps/seedsigner-sp/tests")
+# Paths come from the environment so this runs on a CI runner as well as here.
+# PYTHONPATH must already carry the app's src and tests; MUSIG2_FIXTURE names the
+# psbt fixture.
+FIXTURE = os.environ.get(
+    "MUSIG2_FIXTURE",
+    "/home/rob/apps/seedsigner-sp/tests/data/musig2_psbts.json")
 from test_musig2_psbt import without_other_nonces, role_of, core_nonce
 
-data = json.load(open('/home/rob/apps/seedsigner-sp/tests/data/musig2_psbts.json'))
+data = json.load(open(FIXTURE))
 root = bip32.HDKey.from_seed(bip39.mnemonic_to_seed(data['mnemonics']['A']))
 cc = connect(bip39.mnemonic_to_seed(data['mnemonics']['A']))
 

@@ -2,17 +2,22 @@
 
 # Run with PYTHONPATH=<this dir>:<seedsigner-sp/src> and JCARDSIM_JAR, APPLET_SRC,
 # JAVA_HOME set. See README.md.
-import json, sys
+import json, os, sys
 from embit import bip32, bip39
 from provision import connect
 from seedsigner.helpers import musig2_card as mc, musig2_psbt as mp
 from seedsigner.helpers import silent_payments
 from seedsigner.models.settings_definition import SettingsConstants
 
-sys.path.insert(0, "/home/rob/apps/seedsigner-sp/tests")
+# Paths come from the environment so this runs on a CI runner as well as here.
+# PYTHONPATH must already carry the app's src and tests; MUSIG2_FIXTURE names the
+# psbt fixture.
+FIXTURE = os.environ.get(
+    "MUSIG2_FIXTURE",
+    "/home/rob/apps/seedsigner-sp/tests/data/musig2_psbts.json")
 from test_musig2_sp import silent_send, role_of, single_holder_scripts
 
-data = json.load(open('/home/rob/apps/seedsigner-sp/tests/data/musig2_psbts.json'))
+data = json.load(open(FIXTURE))
 roots = {n: bip32.HDKey.from_seed(bip39.mnemonic_to_seed(data['mnemonics'][n]))
          for n in "ABC"}
 recipient = silent_payments.derive_keys(
