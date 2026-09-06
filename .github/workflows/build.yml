@@ -12,7 +12,12 @@ on:
       - 'tests/**'
       - 'docs/**'
       - '**/*.md'
+      # Every workflow that is not this one. Adding display-rig.yml without
+      # adding it here started three five-board runs from three commits that
+      # touched nothing but tests, which is the exact thing this list exists to
+      # prevent.
       - '.github/workflows/applet-contract.yml'
+      - '.github/workflows/display-rig.yml'
   pull_request:
     branches:
       - main
