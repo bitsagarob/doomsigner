@@ -236,7 +236,10 @@ for name, kind, message in failed:
 # the image, so the answer would describe this machine and not the device.
 # Whether find_library succeeds on a rootfs carrying no /etc/ld.so.cache is a
 # real open question that needs a device or full-system emulation to settle.
-NATIVE_LIBRARIES = ("libsecp256k1.so", "libcrypto.so")
+# Stems, not filenames: the library ships as libsecp256k1.so.5 in /usr/lib on
+# some profiles and as libsecp256k1_linux_armv6l.so under embit's own
+# util/prebuilt on others, and both are correct.
+NATIVE_LIBRARIES = ("libsecp256k1", "libcrypto")
 
 
 def main():
@@ -265,8 +268,12 @@ def main():
 
         broken = [line.split("\t") for line in result.stdout.splitlines()
                   if line.startswith("BROKEN")]
+        # Anywhere in the rootfs, not just /usr/lib: embit also looks in its own
+        # util/prebuilt directory, and an image that ships the library only there
+        # is correct. Looking in one place reported a good image as broken.
         missing = [lib for lib in NATIVE_LIBRARIES
-                   if not glob.glob(os.path.join(rootfs, "usr", "lib", lib + "*"))]
+                   if not glob.glob(os.path.join(rootfs, "**", lib + "*"),
+                                    recursive=True)]
 
         for _, name, message in broken:
             print(f"  BROKEN  {name}  {message}")

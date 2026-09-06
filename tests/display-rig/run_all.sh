@@ -11,6 +11,10 @@
 # Results land in a dated directory: the probes' output as text, and every
 # screen as a numbered PNG. Picking which frames are worth publishing is still a
 # human step; this gets you to the point of choosing.
+#
+# Everything under the sandbox is build output. It is deleted and regenerated
+# from this directory on every run, so nothing there is worth editing and a
+# stale copy cannot survive to be tested by mistake. Change a probe here.
 set -uo pipefail
 
 APP_SRC="${1:-/home/rob/apps/seedsigner-sp/src}"
@@ -53,8 +57,12 @@ echo
   echo "uncommitted: $GIT_DIRTY file(s)"; } > "$OUT/provenance.txt"
 
 # Stage the app and the fixtures the probes read.
+# Scratch is regenerated, never edited: the jcardsim pieces are staged from the
+# repo too, so the sandbox holds no source anyone could change by accident.
 STAGE="$UML/appsrc-pass"
-rm -rf "$STAGE"; mkdir -p "$STAGE/tests/data"
+rm -rf "$STAGE" "$UML/jcardfs"; mkdir -p "$STAGE/tests/data" "$UML/jcardfs"
+cp -r "$RIG/jcardsim/smartcard" "$UML/jcardfs/"
+cp "$RIG/jcardsim"/*.py "$UML/jcardfs/"
 cp -r "$APP_SRC/seedsigner" "$STAGE/"
 for f in test_musig2_card.py test_musig2_psbt.py test_musig2_sp.py psbt_testing_util.py; do
   cp "$(dirname "$APP_SRC")/tests/$f" "$STAGE/tests/" 2>/dev/null || true
