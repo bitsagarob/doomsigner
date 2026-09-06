@@ -56,7 +56,7 @@ echo
 STAGE="$UML/appsrc-pass"
 rm -rf "$STAGE"; mkdir -p "$STAGE/tests/data"
 cp -r "$APP_SRC/seedsigner" "$STAGE/"
-for f in test_musig2_card.py test_musig2_psbt.py psbt_testing_util.py; do
+for f in test_musig2_card.py test_musig2_psbt.py test_musig2_sp.py psbt_testing_util.py; do
   cp "$(dirname "$APP_SRC")/tests/$f" "$STAGE/tests/" 2>/dev/null || true
 done
 cp "$(dirname "$APP_SRC")/tests/data/musig2_psbts.json" "$STAGE/tests/data/" 2>/dev/null || true
@@ -97,6 +97,7 @@ run_one() {   # name, script inside /app, whether to capture the display
   echo
 }
 
+run_one silent-pay  musig2_silent_payment_probe.py  no
 run_one one-visit   card_one_visit_probe.py  no
 run_one rounds      card_rounds_probe.py     no
 run_one offer       shoot_card_offer.py      yes
