@@ -42,6 +42,8 @@ controller and a gpiochip that pretend to be hardware.
 | `release_gate.sh` | the check before tagging: runs a pass and refuses to call it good if anything is missing |
 | `test_decode_st7789.py` | the decoder against hand-built captures, no sandbox needed |
 | `test_decode_mutations.py` | breaks the decoder twelve ways and requires each break to be caught |
+| `shoot_bip353_screens.py` | renders the BIP-353 payment-name screens in every status |
+| `shoot_one_screen.py` | the smallest possible probe: one stock screen through the real driver |
 
 ## Why the app needs no changes
 
