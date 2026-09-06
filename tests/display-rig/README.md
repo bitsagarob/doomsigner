@@ -38,6 +38,10 @@ controller and a gpiochip that pretend to be hardware.
 | `decode_st7789.py` | replays a capture through the panel's state machine, writes a PNG (standard library only) |
 | `Makefile` | out-of-tree build against a UML kernel tree |
 | `flow_walk.py` | drives a signing flow inside the sandbox and captures every screen |
+| `run_all.sh` | one full pass: every probe and shooter, both layers, into a dated directory |
+| `release_gate.sh` | the check before tagging: runs a pass and refuses to call it good if anything is missing |
+| `test_decode_st7789.py` | the decoder against hand-built captures, no sandbox needed |
+| `test_decode_mutations.py` | breaks the decoder twelve ways and requires each break to be caught |
 
 ## Why the app needs no changes
 
@@ -115,3 +119,41 @@ colours come out right. A decoder that re-applied them geometrically would
 rotate every correct frame and report a negative for every good one. So the
 decoder decodes frame memory as written and warns when either value is not what
 the driver's init sets.
+
+## What runs where
+
+The rig has two halves and they cost very different amounts to run.
+
+| | needs | when it runs |
+|---|---|---|
+| `test_decode_st7789.py`, `test_decode_mutations.py` | python | every push, in the `Display rig` workflow, about 3 seconds |
+| the kernel module compile | a UML kernel tree | every push, cached, about 2 seconds after the first |
+| the applet layer | a JVM and jcardsim | weekly and on demand, in the `Applet contract` workflow |
+| a full pass with screens | the UML sandbox | by hand, and before every tag |
+
+The split is not arbitrary. The decoder is the part that fails **silently**: a
+byte-order slip or an off-by-one in the addressing window does not crash, it
+writes a plausible PNG that is wrong, and any screenshot taken from it is wrong
+in the same way. So it is checked on the commit that could cause it. Getting a
+real screen needs a kernel and the app inside it, which no hosted runner will do
+cheaply, so that stays here.
+
+## Before tagging a release
+
+    ./release_gate.sh /home/rob/apps/seedsigner-sp/src v0.13
+
+`run_all.sh` answers *did a pass happen*. That is a different question from *is
+this good enough to ship*, and it cannot answer the second: it prints
+`display layer: ran` whether the probes proved anything or timed out, and exits 0
+either way. The gate reads the pass it produced and requires each probe to have
+said the thing it exists to say.
+
+It refuses an app tree with uncommitted changes, a pass where the applet layer
+was skipped, a probe that produced no verdict or left a `Traceback`, and a
+capture that decoded to no screens. Give it a ref and it also refuses to run
+against a tree that is not on that ref.
+
+It writes `GATE.txt` into the pass directory and tags nothing. **It cannot look
+at the screens.** A screen can render perfectly and still say the wrong thing --
+"Two Steps" did -- so the last step is a human opening `flow-musig2/`, `offer/`
+and `refusal/` and reading them.

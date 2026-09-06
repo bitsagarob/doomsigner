@@ -141,17 +141,28 @@ run_one flow-normal "flow_walk.py normal"    yes
 # --- the applet layer -------------------------------------------------------
 # These need no kernel devices, only python and a JVM, so they run here rather
 # than inside the sandbox.
+# Whichever python has embit and pysatochip. Defaulting to plain `python3` made
+# this layer depend on the caller having a venv activated, which is invisible: a
+# pass run from a fresh shell skipped the applet layer with an import error while
+# one run from an activated shell passed, from identical code.
+APPLET_PY="${APPLET_PY:-$UML/pyvenv/bin/python3}"
+[ -x "$APPLET_PY" ] || APPLET_PY="$(command -v python3)"
+
 applet_ran=no
 if [ -n "${JCARDSIM_JAR:-}" ] && [ -n "${APPLET_SRC:-}" ] && [ -n "${JAVA_HOME:-}" ]; then
   if [ ! -d "$APPLET_SRC/test/classes" ]; then
     echo "--- applet layer: SKIPPED, $APPLET_SRC/test/classes missing"
     echo "    compile AppletPipe first: $APPLET_SRC/test/run.sh"
+  elif ! "$APPLET_PY" -c "import embit, pysatochip" 2>/dev/null; then
+    echo "--- applet layer: SKIPPED, $APPLET_PY has no embit/pysatochip"
+    echo "    set APPLET_PY to a python that does"
   else
     applet_ran=yes
     export PYTHONPATH="$RIG/jcardsim:$APP_SRC:$(dirname "$APP_SRC")/tests"
+    echo "    python: $APPLET_PY"
     for probe in contract_test demo1_nonce_vault demo2_silent_payment; do
       echo "--- applet: $probe"
-      timeout 600 python3 "$RIG/jcardsim/$probe.py" 2>&1 \
+      timeout 600 "$APPLET_PY" "$RIG/jcardsim/$probe.py" 2>&1 \
         | grep -vE "RuntimeWarning|shadowing|remove this package|from smartcard" \
         > "$OUT/applet-$probe.txt"
       sed 's/^/    /' "$OUT/applet-$probe.txt" | tail -10
@@ -164,7 +175,9 @@ else
 fi
 
 echo "screens:  $(find "$OUT" -name 's-*.png' | wc -l)"
-echo "display layer: ran"
+# "ran" is all this can honestly claim: it does not read the probes' verdicts.
+# release_gate.sh does, and refuses a pass where one of them said nothing.
+echo "display layer: 7 probe(s) ran (verdicts not checked here -- see release_gate.sh)"
 echo "applet layer:  $applet_ran"
 [ "$applet_ran" = yes ] || echo "PARTIAL PASS: the applet was not exercised"
 echo "everything in $OUT"
