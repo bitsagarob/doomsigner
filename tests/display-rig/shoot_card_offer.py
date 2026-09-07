@@ -51,6 +51,9 @@ controller.psbt = PSBT.from_string(data["psbt_round_one"])
 controller.psbt_parser = PSBTParser(controller.psbt, seed=seed,
                                     network=SettingsConstants.REGTEST)
 
+_real_init = seedkeeper_utils.init_satochip
+
+
 def offer(card, presses):
     controller.musig2_session = None
     seedkeeper_utils.init_satochip = lambda *a, **k: card
@@ -75,7 +78,26 @@ print("3 offer, Use Card, card holds another seed ->",
 press_after(["SELECT"])
 psbt_views.PSBTMusig2WrongCardView().run()
 print("    wrong-card screen rendered", flush=True)
-print("4 offer, Continue ->", offer(None, ["DOWN", "SELECT"]), flush=True)
+print("4 offer, Keep Device On ->", offer(None, ["DOWN", "SELECT"]), flush=True)
 print("    session:", type(controller.musig2_session).__name__
       if controller.musig2_session else None, flush=True)
+
+# A card already open and holding this seed is used without asking, so no offer
+# screen is drawn at all. Nothing is patched here: setting the connector is what a
+# seed loaded off a SeedKeeper leaves behind, and init_satochip is left alone so a
+# reader being opened would show up as an extra screen.
+seedkeeper_utils.init_satochip = _real_init
+controller.musig2_session = None
+controller.Satochip_Connector = matching
+dest = psbt_views.PSBTMusig2CardOfferView().run()
+print("5 card already open, no offer ->", dest.View_cls.__name__, flush=True)
+print("    session:", type(controller.musig2_session).__name__
+      if controller.musig2_session else None, flush=True)
+print("    nonce_on_card:",
+      getattr(controller.musig2_session, "nonce_on_card", None), flush=True)
+
+# and the round screen that follows must say where the nonce went
+press_after(["SELECT"])
+psbt_views.PSBTMusig2RoundView().run()
+print("6 round screen, card holding the nonce", flush=True)
 print("DONE", flush=True)
