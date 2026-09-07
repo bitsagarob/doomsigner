@@ -123,7 +123,7 @@ cp /tmp/gate-pass.txt "$OUT/run_all.log"
 # reads the new wording, which is the right outcome. Silence is the failure mode
 # worth being noisy about.
 check_said() {  # file, description, pattern
-  if grep -qE "$3" "$OUT/$1.txt" 2>/dev/null; then
+  if grep -qE -- "$3" "$OUT/$1.txt" 2>/dev/null; then
     pass "$2"
   else
     bad "$1 never said: $2"
@@ -139,9 +139,13 @@ check_said one-visit   "one visit, and the pooled nonce was the one used" \
 check_said rounds      "the card refused a replayed seal" \
            "safe: the card refused"
 check_said offer       "the card offer leads to the round screen" \
-           "Continue -> PSBTMusig2RoundView"
+           "Keep Device On -> PSBTMusig2RoundView"
+check_said offer       "an open card skips the offer entirely" \
+           "card already open, no offer -> PSBTMusig2RoundView"
 check_said refusal     "a refused card returns to the main menu" \
            "refusal led to: MainMenuView"
+check_said one-visit-screen "a coordinator-armed spend signs in one visit" \
+           "VERDICT: one visit, signed, and the screen counts no steps"
 check_said flow-musig2 "the musig2 flow reaches the signed QR" \
            "FLOW:.*PSBTMusig2RoundView.*PSBTSignedQRDisplayView"
 check_said flow-normal "an ordinary spend reaches the signed QR first time" \
@@ -163,7 +167,7 @@ fi
 echo
 echo "the screens"
 SCREENS=0
-for capture in offer refusal flow-musig2 flow-normal; do
+for capture in offer refusal one-visit-screen flow-musig2 flow-normal; do
   count=$(find "$OUT/$capture" -name 's-*.png' 2>/dev/null | wc -l)
   SCREENS=$((SCREENS + count))
   if [ "$count" -eq 0 ]; then

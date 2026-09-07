@@ -228,6 +228,13 @@ def write_png(path, width, height, rgb):
         handle.write(chunk(b"IEND", b""))
 
 
+# A whole signing flow decodes to about a hundred frames. Far more than that means
+# something upstream hung and kept redrawing, and writing a PNG per frame then
+# fills the disk: a probe that hung once wrote 30118 of them, 3.4 GB, and nothing
+# stopped it. Cap the writing, keep counting, and say so loudly.
+MAX_SPLIT_FRAMES = 500
+
+
 def main():
     if len(sys.argv) not in (3, 4):
         print("usage: decode_st7789.py capture.bin out.png [--split]", file=sys.stderr)
@@ -240,9 +247,14 @@ def main():
 
     if len(sys.argv) == 4 and sys.argv[3] == "--split":
         base = sys.argv[2][:-4] if sys.argv[2].endswith(".png") else sys.argv[2]
-        for index, frame in enumerate(panel.frames, 1):
+        for index, frame in enumerate(panel.frames[:MAX_SPLIT_FRAMES], 1):
             write_png(f"{base}-{index:02d}.png", panel.width, panel.height, frame)
-        print(f"wrote {len(panel.frames)} frame(s) as {base}-NN.png")
+        if len(panel.frames) > MAX_SPLIT_FRAMES:
+            print(f"REFUSED: {len(panel.frames)} frames is far past the "
+                  f"{MAX_SPLIT_FRAMES} this expects. Whatever produced this capture "
+                  f"did not stop. Wrote the first {MAX_SPLIT_FRAMES} only.")
+        else:
+            print(f"wrote {len(panel.frames)} frame(s) as {base}-NN.png")
     else:
         write_png(sys.argv[2], panel.width, panel.height, panel.pixels)
 

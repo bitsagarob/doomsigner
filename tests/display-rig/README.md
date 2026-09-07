@@ -44,6 +44,7 @@ controller and a gpiochip that pretend to be hardware.
 | `test_decode_mutations.py` | breaks the decoder twelve ways and requires each break to be caught |
 | `shoot_bip353_screens.py` | renders the BIP-353 payment-name screens in every status |
 | `shoot_one_screen.py` | the smallest possible probe: one stock screen through the real driver |
+| `shoot_one_visit.py` | the happy path: a coordinator-armed spend that signs in one visit |
 
 ## Why the app needs no changes
 

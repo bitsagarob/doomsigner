@@ -135,6 +135,10 @@ run_one one-visit   card_one_visit_probe.py  no
 run_one rounds      card_rounds_probe.py     no
 run_one offer       shoot_card_offer.py      yes
 run_one refusal     shoot_musig2_refusal.py  yes
+# The happy path, captured rather than only asserted: a spend the coordinator
+# armed with a nonce this card published earlier, which signs in one visit. Its
+# screen is the one that used to be wrong, so it is worth a picture.
+run_one one-visit-screen shoot_one_visit.py yes
 run_one flow-musig2 "flow_walk.py musig2"    yes
 run_one flow-normal "flow_walk.py normal"    yes
 
@@ -177,9 +181,9 @@ fi
 echo "screens:  $(find "$OUT" -name 's-*.png' | wc -l)"
 # "ran" is all this can honestly claim: it does not read the probes' verdicts.
 # release_gate.sh does, and refuses a pass where one of them said nothing.
-echo "display layer: 7 probe(s) ran (verdicts not checked here -- see release_gate.sh)"
+echo "display layer: 8 probe(s) ran (verdicts not checked here -- see release_gate.sh)"
 echo "applet layer:  $applet_ran"
 [ "$applet_ran" = yes ] || echo "PARTIAL PASS: the applet was not exercised"
 echo "everything in $OUT"
-{ echo "display layer: 7 probe(s) ran, verdicts not checked"
+{ echo "display layer: 8 probe(s) ran, verdicts not checked"
   echo "applet layer: $applet_ran"; } >> "$OUT/provenance.txt"
