@@ -20,7 +20,7 @@
 # governs a desktop checkout, this one governs the device image, and build.sh
 # deletes requirements.txt from the rootfs, so a disagreement between the two
 # does not show up until the hardware behaves differently from the simulator.
-PYTHON_PYDNSSEC_PROVER_VERSION = df72b67f5585c4cfae779ca833db3c5c9304f625
+PYTHON_PYDNSSEC_PROVER_VERSION = 4a3365e4b10fc6635f26397120a2cce1b8fd8b2c
 PYTHON_PYDNSSEC_PROVER_SITE = $(call github,bitsagarob,pydnssec-prover,$(PYTHON_PYDNSSEC_PROVER_VERSION))
 PYTHON_PYDNSSEC_PROVER_LICENSE = MIT
 PYTHON_PYDNSSEC_PROVER_LICENSE_FILES = LICENSE
