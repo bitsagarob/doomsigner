@@ -4,16 +4,16 @@
 #
 ################################################################################
 
-# notTanveer's BIP-352 silent payments branch (embit#145), pinned to a commit
-# rather than a branch name so an upstream force-push cannot change what we
-# build. This must stay in step with the pin in the app's requirements.txt:
+# Our fork of notTanveer's BIP-352 silent payments branch (embit#145), which adds
+# BIP-390 musig(), pinned to a commit rather than a branch name so a force-push
+# cannot change what we build. This must stay in step with the pin in the app's requirements.txt:
 # that file governs a desktop checkout, this one governs the device image, and
 # build.sh deletes requirements.txt from the rootfs. When the two disagreed the
 # image shipped 0.8.0 and the wallet had no silent payments at all.
 #
 # Go back to a plain PyPI release the day silent payments land in embit proper.
-PYTHON_EMBIT_VERSION = 533cd850f5f4d4f52c21dc1abae18133d98e394e
-PYTHON_EMBIT_SITE = $(call github,notTanveer,embit,$(PYTHON_EMBIT_VERSION))
+PYTHON_EMBIT_VERSION = a4ee5a41044a0ed3e2b1e92c89880a1ac2e9cb18
+PYTHON_EMBIT_SITE = $(call github,bitsagarob,embit,$(PYTHON_EMBIT_VERSION))
 PYTHON_EMBIT_LICENSE = MIT
 PYTHON_EMBIT_SETUP_TYPE = setuptools
 
