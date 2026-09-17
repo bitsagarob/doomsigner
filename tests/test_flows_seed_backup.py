@@ -23,6 +23,7 @@ Two harness notes:
 from contextlib import contextmanager
 from unittest.mock import patch
 
+import pytest
 import shamir_mnemonic
 
 # Must import test base before the Controller
@@ -272,6 +273,64 @@ class TestSeedBackupFlows(FlowTest):
                 FlowStep(seed_views.SeedOptionsView),
             ],
         )
+
+    @pytest.mark.parametrize("seed_argument", ["pending", "none", "equal_to_stored"])
+    def test_backup_test_skip_pending_seed_requires_finalization(self, seed_argument):
+        if seed_argument == "equal_to_stored":
+            self.store_bip39_seed()
+        seed = Seed(mnemonic=BIP39_MNEMONIC)
+        self.controller.storage.set_pending_seed(seed)
+        count = self.controller.storage.num_seeds()
+
+        self.run_sequence(
+            initial_destination_view_args=dict(seed=None if seed_argument == "none" else seed),
+            sequence=[
+                FlowStep(seed_views.SeedWordsBackupTestPromptView,
+                         button_data_selection=seed_views.SeedWordsBackupTestPromptView.SKIP),
+                FlowStep(seed_views.SeedFinalizeView),
+            ],
+        )
+
+        assert self.controller.storage.get_pending_seed() is seed
+        assert self.controller.storage.num_seeds() == count
+        assert not any(seed is stored for stored in self.controller.storage.seeds)
+
+    @pytest.mark.parametrize("stored", [False, True])
+    @pytest.mark.parametrize("share_index", [0, 1])
+    def test_backup_test_skip_slip39_share_routing(self, stored, share_index):
+        seed = self.store_slip39_seed()
+        if not stored:
+            self.controller.storage.seeds.clear()
+            self.controller.storage.set_pending_seed(seed)
+        destination = seed_views.SeedWordsWarningView if share_index == 0 else (
+            seed_views.SeedOptionsView if stored else seed_views.SeedFinalizeView
+        )
+
+        self.run_sequence(
+            initial_destination_view_args=dict(seed=seed, share_index=share_index),
+            sequence=[
+                FlowStep(seed_views.SeedWordsBackupTestPromptView,
+                         button_data_selection=seed_views.SeedWordsBackupTestPromptView.SKIP),
+                FlowStep(destination),
+            ],
+        )
+        if share_index == 0:
+            assert self.controller.back_stack[-1].view_args["share_index"] == 1
+        assert self.controller.storage.num_seeds() == int(stored)
+        assert self.controller.storage.get_pending_seed() is (None if stored else seed)
+
+    def test_bip85_backup_skip_returns_to_stored_parent(self):
+        seed = self.store_bip39_seed()
+        self.run_sequence(
+            initial_destination_view_args=dict(seed=seed, bip85_data=dict(child_index=0, num_words=12)),
+            sequence=[
+                FlowStep(seed_views.SeedWordsBackupTestPromptView,
+                         button_data_selection=seed_views.SeedWordsBackupTestPromptView.SKIP),
+                FlowStep(seed_views.SeedOptionsView),
+            ],
+        )
+        assert self.controller.storage.seeds[0] is seed
+        assert self.controller.storage.get_pending_seed() is None
 
     def test_backup_test_review_shows_words(self):
         """The Review option re-enters the words display."""

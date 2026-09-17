@@ -2929,7 +2929,7 @@ class SeedWordsBackupTestPromptView(View):
             seed = self.controller.storage.get_pending_seed() if self.seed is None else self.seed
             if isinstance(seed, Slip39Seed) and self.share_index is not None and self.share_index < len(seed.mnemonic_list) - 1:
                 return Destination(SeedWordsWarningView, view_args=dict(seed=self.seed, share_index=self.share_index + 1))
-            if self.seed is not None:
+            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
                 return Destination(SeedOptionsView, view_args=dict(seed=self.seed))
             else:
                 return Destination(SeedFinalizeView)

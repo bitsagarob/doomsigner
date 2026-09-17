@@ -213,6 +213,42 @@ class TestMenuNavigationFlows(FlowTest):
             FlowStep(tools_views.ToolsImageEntropyLivePreviewView),
         ])
 
+    @pytest.mark.parametrize("discard", [False, True])
+    def test_generated_seed_skip_finalize_completion(self, discard):
+        from seedsigner.models.seed import Seed
+
+        seed = Seed(mnemonic="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split())
+        self.controller.storage.set_pending_seed(seed)
+
+        def assert_finalized(view):
+            assert view.seed is seed
+            assert self.controller.storage.seeds[0] is seed
+            assert self.controller.storage.get_pending_seed() is None
+
+        sequence = [
+            FlowStep(seed_views.SeedWordsView, screen_return_value=0),
+            FlowStep(seed_views.SeedWordsView, screen_return_value=0),
+            FlowStep(seed_views.SeedWordsView, screen_return_value=0),
+            FlowStep(seed_views.SeedWordsBackupTestPromptView,
+                     button_data_selection=seed_views.SeedWordsBackupTestPromptView.SKIP),
+            FlowStep(seed_views.SeedFinalizeView,
+                     button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+        ]
+        if discard:
+            sequence += [
+                FlowStep(seed_views.SeedOptionsView, before_run=assert_finalized,
+                         button_data_selection=seed_views.SeedOptionsView.DISCARD),
+                FlowStep(seed_views.SeedDiscardView,
+                         button_data_selection=seed_views.SeedDiscardView.DISCARD),
+            ]
+        else:
+            sequence.append(FlowStep(seed_views.SeedOptionsView, before_run=assert_finalized,
+                                     screen_return_value=RET_CODE__BACK_BUTTON))
+        sequence.append(FlowStep(MainMenuView))
+        self.run_sequence(initial_destination_view_args=dict(seed=None), sequence=sequence)
+        assert self.controller.storage.get_pending_seed() is None
+        assert self.controller.storage.num_seeds() == (0 if discard else 1)
+
     def test_tools_dice_entropy(self):
         """Tools → New seed (dice).
 
