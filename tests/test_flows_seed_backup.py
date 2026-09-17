@@ -295,6 +295,111 @@ class TestSeedBackupFlows(FlowTest):
         assert self.controller.storage.num_seeds() == count
         assert not any(seed is stored for stored in self.controller.storage.seeds)
 
+    @pytest.mark.parametrize("seed_argument", ["pending", "none", "equal_to_stored", "stored"])
+    def test_backup_success_finalization_routing(self, seed_argument):
+        stored = self.store_bip39_seed() if seed_argument in ("equal_to_stored", "stored") else None
+        seed = stored if seed_argument == "stored" else Seed(mnemonic=BIP39_MNEMONIC)
+        if seed_argument != "stored":
+            self.controller.storage.set_pending_seed(seed)
+        view = seed_views.SeedWordsBackupTestSuccessView(seed=None if seed_argument == "none" else seed)
+        with patch.object(view, "run_screen", return_value=0):
+            destination = view.run()
+
+        expected = seed_views.SeedOptionsView if seed_argument == "stored" else seed_views.SeedFinalizeView
+        assert destination.View_cls is expected
+        assert destination.clear_history == (seed_argument == "stored")
+        assert self.controller.storage.get_pending_seed() is (None if seed_argument == "stored" else seed)
+        assert self.controller.storage.num_seeds() == int(stored is not None)
+        if stored is not None:
+            assert self.controller.storage.seeds[0] is stored
+
+    @pytest.mark.parametrize("seed_argument", ["pending", "none", "equal_to_stored", "stored"])
+    @pytest.mark.parametrize("discard", [False, True])
+    def test_discard_seed_finalization_routing(self, seed_argument, discard):
+        stored = self.store_bip39_seed() if seed_argument in ("equal_to_stored", "stored") else None
+        seed = stored if seed_argument == "stored" else Seed(mnemonic=BIP39_MNEMONIC)
+        if seed_argument != "stored":
+            self.controller.storage.set_pending_seed(seed)
+        if seed_argument == "equal_to_stored":
+            assert seed == stored
+            assert seed is not stored
+        stored_fingerprint = stored.get_fingerprint() if stored is not None else None
+        view = seed_views.SeedDiscardView(seed=None if seed_argument == "none" else seed)
+        with patch.object(view, "run_screen", return_value=int(discard)):
+            destination = view.run()
+
+        if discard:
+            assert destination.View_cls is seed_views.MainMenuView
+            assert destination.clear_history
+            if seed_argument == "stored":
+                assert self.controller.storage.num_seeds() == 0
+            else:
+                assert self.controller.storage.num_seeds() == int(stored is not None)
+                if stored is not None:
+                    assert self.controller.storage.seeds[0] is stored
+                    assert stored.get_fingerprint() == stored_fingerprint
+                    assert stored.mnemonic_list == BIP39_MNEMONIC
+                assert self.controller.storage.get_pending_seed() is None
+                assert seed.seed_bytes is None
+                assert seed.mnemonic_list == []
+        else:
+            expected = seed_views.SeedOptionsView if seed_argument == "stored" else seed_views.SeedFinalizeView
+            assert destination.View_cls is expected
+            assert destination.skip_current_view
+            assert self.controller.storage.get_pending_seed() is (None if seed_argument == "stored" else seed)
+            assert self.controller.storage.num_seeds() == int(stored is not None)
+            assert seed.mnemonic_list == BIP39_MNEMONIC
+
+    @pytest.mark.parametrize("seed_argument", ["pending", "none", "equal_to_stored", "stored"])
+    @pytest.mark.parametrize("page_index", [0, 2])
+    def test_seed_words_pending_page_label(self, seed_argument, page_index):
+        stored = self.store_bip39_seed() if seed_argument in ("equal_to_stored", "stored") else None
+        seed = stored if seed_argument == "stored" else Seed(mnemonic=BIP39_MNEMONIC)
+        if seed_argument != "stored":
+            self.controller.storage.set_pending_seed(seed)
+        view = seed_views.SeedWordsView(seed=None if seed_argument == "none" else seed, page_index=page_index)
+        with patch.object(view, "run_screen", return_value=0) as screen:
+            destination = view.run()
+
+        expected_button = view.DONE if seed_argument == "stored" and page_index == 2 else view.NEXT
+        assert screen.call_args.kwargs["button_data"] == [expected_button]
+        assert destination.View_cls is (seed_views.SeedWordsBackupTestPromptView if page_index == 2 else seed_views.SeedWordsView)
+        assert destination.view_args["seed"] is seed
+        if page_index == 0:
+            assert destination.view_args["page_index"] == 1
+
+    @pytest.mark.parametrize("stored", [False, True])
+    @pytest.mark.parametrize("share_index", [0, 1])
+    def test_backup_success_slip39_share_routing(self, stored, share_index):
+        seed = self.store_slip39_seed()
+        if not stored:
+            self.controller.storage.seeds.clear()
+            self.controller.storage.set_pending_seed(seed)
+        view = seed_views.SeedWordsBackupTestSuccessView(seed=seed, share_index=share_index)
+        with patch.object(view, "run_screen", return_value=0):
+            destination = view.run()
+
+        expected = seed_views.SeedWordsWarningView if share_index == 0 else (
+            seed_views.SeedOptionsView if stored else seed_views.SeedFinalizeView
+        )
+        assert destination.View_cls is expected
+        if share_index == 0:
+            assert destination.view_args["share_index"] == 1
+        assert self.controller.storage.num_seeds() == int(stored)
+        assert self.controller.storage.get_pending_seed() is (None if stored else seed)
+
+    def test_bip85_backup_success_requires_child_finalization(self):
+        seed = self.store_bip39_seed()
+        view = seed_views.SeedWordsBackupTestSuccessView(seed=seed, bip85_data=dict(child_index=0, num_words=12))
+        with patch.object(view, "run_screen", return_value=0):
+            destination = view.run()
+
+        assert destination.View_cls is seed_views.SeedFinalizeView
+        assert self.controller.storage.seeds[0] is seed
+        child = self.controller.storage.get_pending_seed()
+        assert child is not seed
+        assert child.mnemonic_list == seed.get_bip85_child_mnemonic(0, 12).split()
+
     @pytest.mark.parametrize("stored", [False, True])
     @pytest.mark.parametrize("share_index", [0, 1])
     def test_backup_test_skip_slip39_share_routing(self, stored, share_index):

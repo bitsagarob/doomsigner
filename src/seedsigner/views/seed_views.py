@@ -1649,13 +1649,13 @@ class SeedDiscardView(View):
 
         if button_data[selected_menu_num] == self.KEEP:
             # Use skip_current_view=True to prevent BACK from landing on this warning screen
-            if self.seed is not None:
+            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
                 return Destination(SeedOptionsView, view_args={"seed": self.seed}, skip_current_view=True)
             else:
                 return Destination(SeedFinalizeView, skip_current_view=True)
 
         elif button_data[selected_menu_num] == self.DISCARD:
-            if self.seed is not None:
+            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
                 self.controller.discard_seed(self.seed)
             else:
                 self.controller.storage.clear_pending_seed()
@@ -2744,7 +2744,8 @@ class SeedWordsView(View):
 
         button_data = []
         num_pages = int(len(mnemonic)/words_per_page)
-        if self.page_index < num_pages - 1 or self.seed is None:
+        is_finalized = any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds)
+        if self.page_index < num_pages - 1 or not is_finalized:
             button_data.append(self.NEXT)
         else:
             button_data.append(self.DONE)
@@ -2762,7 +2763,7 @@ class SeedWordsView(View):
             return Destination(BackStackView)
 
         if button_data[selected_menu_num] == self.NEXT:
-            if self.seed is None and self.page_index == num_pages - 1:
+            if not is_finalized and self.page_index == num_pages - 1:
                 return Destination(
                     SeedWordsBackupTestPromptView,
                     view_args=dict(seed=self.seed, bip85_data=self.bip85_data, share_index=self.share_index),
@@ -3117,7 +3118,7 @@ class SeedWordsBackupTestSuccessView(View):
             self.controller.storage.set_pending_seed(child)
             self.seed = None
 
-        if self.seed is not None:
+        if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
             seed = self.seed
             if isinstance(seed, Slip39Seed) and self.share_index is not None and self.share_index < len(seed.mnemonic_list) - 1:
                 return Destination(SeedWordsWarningView, view_args={"seed": self.seed, "share_index": self.share_index + 1})

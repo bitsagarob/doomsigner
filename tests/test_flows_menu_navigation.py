@@ -205,6 +205,73 @@ class TestMenuNavigationFlows(FlowTest):
     #  TOOLS MENU
     # ======================================================================
 
+    @pytest.mark.parametrize("discard", [False, True])
+    def test_verified_pending_seed_completion(self, discard):
+        from seedsigner.models.seed import Seed
+
+        seed = Seed(mnemonic="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".split())
+        self.controller.storage.set_pending_seed(seed)
+        sequence = [
+            FlowStep(seed_views.SeedWordsBackupTestPromptView,
+                     button_data_selection=seed_views.SeedWordsBackupTestPromptView.VERIFY),
+        ]
+        sequence += [FlowStep(seed_views.SeedWordsBackupTestView, screen_return_value=0) for _ in range(12)]
+        sequence += [
+            FlowStep(seed_views.SeedWordsBackupTestSuccessView, screen_return_value=0),
+            FlowStep(seed_views.SeedFinalizeView,
+                     button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+        ]
+        if discard:
+            sequence += [
+                FlowStep(seed_views.SeedOptionsView,
+                         button_data_selection=seed_views.SeedOptionsView.DISCARD),
+                FlowStep(seed_views.SeedDiscardView,
+                         button_data_selection=seed_views.SeedDiscardView.DISCARD),
+            ]
+        else:
+            sequence.append(FlowStep(seed_views.SeedOptionsView, screen_return_value=RET_CODE__BACK_BUTTON))
+        sequence.append(FlowStep(MainMenuView))
+        with patch("seedsigner.views.seed_views.random.shuffle", lambda seq: None):
+            self.run_sequence(initial_destination_view_args=dict(seed=None), sequence=sequence)
+        assert self.controller.storage.get_pending_seed() is None
+        assert self.controller.storage.num_seeds() == (0 if discard else 1)
+        if not discard:
+            assert self.controller.storage.seeds[0] is seed
+
+    @pytest.mark.parametrize("discard", [False, True])
+    def test_calc_final_word_pending_discard_completion(self, discard):
+        sequence = [
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.TOOLS),
+            FlowStep(tools_views.ToolsMenuView, button_data_selection=tools_views.ToolsMenuView.KEYBOARD),
+            FlowStep(tools_views.ToolsCalcFinalWordNumWordsView, screen_return_value=0),
+        ]
+        sequence += [FlowStep(seed_views.SeedMnemonicEntryView, screen_return_value="abandon") for _ in range(11)]
+        sequence += [
+            FlowStep(tools_views.ToolsCalcFinalWordFinalizePromptView,
+                     button_data_selection=tools_views.ToolsCalcFinalWordFinalizePromptView.ZEROS),
+            FlowStep(tools_views.ToolsCalcFinalWordShowFinalWordView,
+                     button_data_selection=tools_views.ToolsCalcFinalWordShowFinalWordView.NEXT),
+            FlowStep(tools_views.ToolsCalcFinalWordDoneView,
+                     button_data_selection=tools_views.ToolsCalcFinalWordDoneView.DISCARD),
+            FlowStep(seed_views.SeedDiscardView, button_data_selection=(
+                seed_views.SeedDiscardView.DISCARD if discard else seed_views.SeedDiscardView.KEEP
+            )),
+        ]
+        if not discard:
+            sequence += [
+                FlowStep(seed_views.SeedFinalizeView,
+                         button_data_selection=seed_views.SeedFinalizeView.FINALIZE),
+                FlowStep(seed_views.SeedOptionsView, screen_return_value=RET_CODE__BACK_BUTTON),
+            ]
+        sequence += [
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.TOOLS),
+            FlowStep(tools_views.ToolsMenuView, screen_return_value=RET_CODE__BACK_BUTTON),
+            FlowStep(MainMenuView),
+        ]
+        self.run_sequence(sequence)
+        assert self.controller.storage.get_pending_seed() is None
+        assert self.controller.storage.num_seeds() == (0 if discard else 1)
+
     def test_tools_image_entropy(self):
         """Tools → New seed (camera)."""
         self.run_sequence([
