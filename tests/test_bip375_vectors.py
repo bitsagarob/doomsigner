@@ -48,18 +48,10 @@ requires_sp = pytest.mark.skipif(
 
 
 # Vectors this fork does not handle yet. One line each, so a later fix flips a
-# named row. Both gaps live in musig2_psbt.expected_scripts and its helpers.
-KNOWN_GAPS = {
-    "can finalize: two inputs single-signer using global ECDH share":
-        "expected_scripts reads only per-input PSBT_IN_SP_ECDH_SHARE, never the "
-        "global PSBT_GLOBAL_SP_ECDH_SHARE (embit exposes it as psbt.sp_ecdh_shares)",
-    "can finalize: two inputs / two sp outputs with mixed global and per-input ECDH shares":
-        "same global-share gap: the global half of the mix is never read",
-    "can finalize: three sp outputs (different scan keys) with multiple global ECDH shares":
-        "same global-share gap, here with one global share per scan key",
-    "can finalize: two inputs using global ECDH share - only eligible inputs contribute shares (P2SH excluded)":
-        "same global-share gap, with an ineligible P2SH input alongside",
-}
+# named row. Empty since the two gaps it held - the global PSBT_GLOBAL_SP_ECDH_SHARE
+# going unread, and the input pubkey lookup assuming a bare P2WPKH scriptPubKey -
+# were fixed in musig2_psbt.expected_scripts and its helpers.
+KNOWN_GAPS = {}
 
 
 def load_vectors():

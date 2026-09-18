@@ -1,6 +1,6 @@
 """
     BIP-375 shares on a send this device did not build: which key an input's share is
-    checked against.
+    checked against, and the one global share that may stand for all of them.
 
     The transactions here are assembled from scratch rather than recorded, because what
     is being tested is the shape of the input, not any particular coin: BIP-352 accepts
@@ -12,7 +12,7 @@
     and their proofs exist.
 
     `tests/test_bip375_vectors.py` runs macgyver13's published vectors end to end; this
-    file is the unit-level statement of the same rule.
+    file is the unit-level statement of the same two rules.
 """
 import os
 
@@ -113,6 +113,19 @@ def _write_input_shares(psbt, privs):
             generate_dleq_proof(priv.secret, scan_key, r=os.urandom(32))
 
 
+def _write_global_share(psbt, privs):
+    """The one share BIP-375 lets a sender holding every eligible key write."""
+    from embit.silent_payments.dleq import generate_dleq_proof
+    from embit.silent_payments.sp import _tweak_mul
+    from embit.util.key import SECP256K1_ORDER
+
+    scan_key = _scan_key()
+    a_sum = sum(int.from_bytes(priv.secret, "big") for priv in privs) % SECP256K1_ORDER
+    secret = a_sum.to_bytes(32, "big")
+    psbt.sp_ecdh_shares[scan_key] = _tweak_mul(scan_key, secret)
+    psbt.sp_dleq_proofs[scan_key] = generate_dleq_proof(secret, scan_key, r=os.urandom(32))
+
+
 def _scripts(psbt):
     return {idx: bytes(s.data) for idx, s in mp.expected_scripts(psbt).items()}
 
@@ -171,3 +184,72 @@ def test_a_taproot_input_still_uses_the_output_key_itself():
     xonly = bytes(range(32))
     psbt.inputs[0].witness_utxo = TransactionOutput(100000, script.Script(b"\x51\x20" + xonly))
     assert mp._input_pubkey(psbt.inputs[0], 0) == b"\x02" + xonly
+
+
+# --- the global share ------------------------------------------------------------------
+
+def test_a_global_share_derives_the_outputs_when_no_input_carries_one():
+    psbt, privs = _send(["p2pkh", "p2sh-p2wpkh"])
+    _write_global_share(psbt, privs)
+    assert not any(inp.unknown for inp in psbt.inputs)
+    assert _scripts(_reparse(psbt)) == _oracle(psbt, privs)
+
+
+def test_the_global_share_and_the_per_input_shares_agree():
+    """Two encodings of one number, so the device must derive the same script from each."""
+    per_input, privs = _send(["p2wpkh", "p2wpkh"])
+    _write_input_shares(per_input, privs)
+    globally, _ = _send(["p2wpkh", "p2wpkh"])
+    _write_global_share(globally, privs)
+    assert _scripts(_reparse(globally)) == _scripts(_reparse(per_input))
+
+
+def test_the_global_share_survives_the_wire():
+    psbt, privs = _send(["p2wpkh"])
+    _write_global_share(psbt, privs)
+    again = _reparse(psbt)
+    assert again.sp_ecdh_shares == psbt.sp_ecdh_shares
+    assert _scripts(again) == _oracle(psbt, privs)
+
+
+def test_the_global_share_is_what_the_output_comes_from_when_both_are_present():
+    """BIP-375 says derive from the global share if it is there, so a per-input share
+    beside it is not consulted. Stated as a test because the opposite precedence is
+    just as easy to write and nothing else in the suite would notice."""
+    psbt, privs = _send(["p2wpkh"])
+    _write_global_share(psbt, privs)
+    _write_input_shares(psbt, privs)
+    scan_key = _scan_key()
+    proof = bytearray(psbt.inputs[0].unknown[bytes([mp.PSBT_IN_SP_DLEQ]) + scan_key])
+    proof[0] ^= 1
+    psbt.inputs[0].unknown[bytes([mp.PSBT_IN_SP_DLEQ]) + scan_key] = bytes(proof)
+    assert _scripts(_reparse(psbt)) == _oracle(psbt, privs)
+
+
+@pytest.mark.parametrize("attack", ["flip_proof", "drop_proof", "rogue_share"])
+def test_a_global_share_that_does_not_prove_out_is_refused(attack):
+    from embit.silent_payments.sp import _tweak_mul
+
+    psbt, privs = _send(["p2wpkh", "p2wpkh"])
+    _write_global_share(psbt, privs)
+    scan_key = _scan_key()
+    if attack == "flip_proof":
+        proof = bytearray(psbt.sp_dleq_proofs[scan_key])
+        proof[40] ^= 1
+        psbt.sp_dleq_proofs[scan_key] = bytes(proof)
+    elif attack == "drop_proof":
+        del psbt.sp_dleq_proofs[scan_key]
+    else:
+        # A share of some other scalar entirely, which would send the money elsewhere.
+        psbt.sp_ecdh_shares[scan_key] = _tweak_mul(scan_key, os.urandom(32))
+    with pytest.raises(mp.Musig2Error):
+        mp.expected_scripts(psbt)
+
+
+def test_a_global_share_missing_one_input_is_refused():
+    """It is proved against the sum of every eligible input's key, so a share built
+    from some of them - with a perfectly good proof of itself - does not verify."""
+    psbt, privs = _send(["p2wpkh", "p2wpkh"])
+    _write_global_share(psbt, privs[:1])
+    with pytest.raises(mp.Musig2Error):
+        mp.expected_scripts(psbt)

@@ -420,25 +420,41 @@ def _plain_input_share(scope, input_index: int, scan_key: bytes):
 
 def expected_scripts(psbt) -> Dict[int, Script]:
     """{output index: script} for every silent payment output, from the verified shares."""
+    from embit.silent_payments.dleq import verify_dleq_proof
     from embit.silent_payments.sp import (_tweak_mul, derive_recipient_outputs,
                                           get_eligible_inputs, get_input_hash)
     groups, indices = _sp_groups(psbt)
     scripts = {}
     for scan_key, (_, spend_keys) in groups.items():
+        # BIP-375: a sender holding every eligible input's key may write one global
+        # share for the whole transaction instead of a share per input, and the BIP
+        # says to derive from that one when it is there. It is proved against the sum
+        # of the input keys, so the sum is built either way.
+        global_share = getattr(psbt, "sp_ecdh_shares", {}).get(scan_key)
+        global_proof = getattr(psbt, "sp_dleq_proofs", {}).get(scan_key)
         A_sum = ecdh_sum = None
         for i in get_eligible_inputs(psbt.inputs):
             scope = psbt.inputs[i]
             keypath = [a for a in read_aggregates(scope, i) if a.is_keypath]
-            if keypath:
-                if len(keypath) != 1 or bytes(scope.script_pubkey.data) != b"\x51\x20" + keypath[0].key[1:]:
-                    raise Musig2Error("Input %d: the MuSig2 key does not lock this coin." % i)
+            if keypath and (len(keypath) != 1
+                            or bytes(scope.script_pubkey.data) != b"\x51\x20" + keypath[0].key[1:]):
+                raise Musig2Error("Input %d: the MuSig2 key does not lock this coin." % i)
+            if global_share is not None:
+                pubkey = _input_pubkey(scope, i)
+            elif keypath:
                 pubkey, ecdh = _musig2_input_share(scope, keypath[0], scan_key)
             else:
                 pubkey, ecdh = _plain_input_share(scope, i, scan_key)
             A_sum = m.point_add(A_sum, m.cpoint(pubkey))
-            ecdh_sum = m.point_add(ecdh_sum, m.cpoint(ecdh))
+            if global_share is None:
+                ecdh_sum = m.point_add(ecdh_sum, m.cpoint(ecdh))
         if A_sum is None:
             raise Musig2Error("No input can pay a silent payment address.")
+        if global_share is not None:
+            if global_proof is None or not verify_dleq_proof(m.cbytes(A_sum), scan_key,
+                                                             global_share, global_proof):
+                raise Musig2Error("The transaction's silent payment share does not verify.")
+            ecdh_sum = m.cpoint(global_share)
         input_hash = get_input_hash([inp.vin for inp in psbt.inputs], m.cbytes(A_sum))
         outputs = derive_recipient_outputs(_tweak_mul(m.cbytes(ecdh_sum), input_hash), spend_keys)
         for pos, idx in enumerate(indices[scan_key]):
