@@ -50,9 +50,6 @@ requires_sp = pytest.mark.skipif(
 # Vectors this fork does not handle yet. One line each, so a later fix flips a
 # named row. Both gaps live in musig2_psbt.expected_scripts and its helpers.
 KNOWN_GAPS = {
-    "can finalize: one P2PKH input single-signer":
-        "_plain_input_share looks for the pubkey hash at the P2WPKH offset, so a "
-        "P2PKH input never matches its BIP32 derivation",
     "can finalize: two inputs single-signer using global ECDH share":
         "expected_scripts reads only per-input PSBT_IN_SP_ECDH_SHARE, never the "
         "global PSBT_GLOBAL_SP_ECDH_SHARE (embit exposes it as psbt.sp_ecdh_shares)",
@@ -62,9 +59,6 @@ KNOWN_GAPS = {
         "same global-share gap, here with one global share per scan key",
     "can finalize: two inputs using global ECDH share - only eligible inputs contribute shares (P2SH excluded)":
         "same global-share gap, with an ineligible P2SH input alongside",
-    "in progress: large PSBT with nine mixed inputs / six outputs - some inputs signed":
-        "the P2PKH input and the P2SH-wrapped input both miss the pubkey lookup, "
-        "which assumes a bare P2WPKH scriptPubKey",
 }
 
 

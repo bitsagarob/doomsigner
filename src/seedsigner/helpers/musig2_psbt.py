@@ -384,20 +384,36 @@ def _musig2_input_share(scope, agg: Aggregate, scan_key: bytes):
     return b"\x02" + m.xbytes(Q), m.cbytes(ecdh)
 
 
-def _plain_input_share(scope, scan_key: bytes):
+def _input_pubkey(scope, input_index: int) -> bytes:
+    """BIP-352's public key of an eligible input that is not MuSig2.
+
+    P2TR carries the key itself; P2PKH, P2WPKH and P2SH-P2WPKH each commit to a hash
+    of it at a different offset, so embit is asked where that hash is and the key comes
+    from the input's derivations only when it hashes to it. The wrapped case is why the
+    redeem script goes along: it is the PSBT's word, and embit returns nothing for one
+    that does not hash to the scriptPubKey, which is all the coin vouches for.
+    """
+    from embit.silent_payments.sp import pubkey_hash_from_script
+    spk = scope.script_pubkey
+    if spk.script_type() == "p2tr":
+        return b"\x02" + bytes(spk.data[2:34])
+    keyhash = pubkey_hash_from_script(spk, scope.redeem_script)
+    pubkey = next((pub.sec() for pub in scope.bip32_derivations
+                   if keyhash is not None and hash160(pub.sec()) == keyhash), None)
+    if pubkey is None:
+        raise Musig2Error("Input %d: no public key for the coin it spends." % input_index)
+    return pubkey
+
+
+def _plain_input_share(scope, input_index: int, scan_key: bytes):
     """BIP-375 per-input share of an input that is not MuSig2, checked against its key."""
     from embit.silent_payments.dleq import verify_dleq_proof
     share = scope.unknown.get(bytes([PSBT_IN_SP_ECDH_SHARE]) + scan_key)
     proof = scope.unknown.get(bytes([PSBT_IN_SP_DLEQ]) + scan_key)
     if share is None:
         raise SharesIncomplete()
-    spk = scope.script_pubkey
-    if spk.script_type() == "p2tr":
-        pubkey = b"\x02" + bytes(spk.data[2:34])
-    else:
-        pubkey = next((pub.sec() for pub in scope.bip32_derivations
-                       if hash160(pub.sec()) == bytes(spk.data[2:22])), None)
-    if pubkey is None or proof is None or not verify_dleq_proof(pubkey, scan_key, share, proof):
+    pubkey = _input_pubkey(scope, input_index)
+    if proof is None or not verify_dleq_proof(pubkey, scan_key, share, proof):
         raise Musig2Error("An input's silent payment share does not verify.")
     return pubkey, share
 
@@ -418,7 +434,7 @@ def expected_scripts(psbt) -> Dict[int, Script]:
                     raise Musig2Error("Input %d: the MuSig2 key does not lock this coin." % i)
                 pubkey, ecdh = _musig2_input_share(scope, keypath[0], scan_key)
             else:
-                pubkey, ecdh = _plain_input_share(scope, scan_key)
+                pubkey, ecdh = _plain_input_share(scope, i, scan_key)
             A_sum = m.point_add(A_sum, m.cpoint(pubkey))
             ecdh_sum = m.point_add(ecdh_sum, m.cpoint(ecdh))
         if A_sum is None:
