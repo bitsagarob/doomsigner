@@ -72,3 +72,9 @@ def _base_module_single_identity():
         "tests/base.py was imported under two module identities ('base' and "
         "'tests.base'); use `import base` in all test files"
     )
+
+
+def pytest_addoption(parser):
+    # Used by tests/test_bip375_vectors.py to write its pass/fail table as markdown.
+    parser.addoption("--matrix", action="store", default=None,
+                     help="write the BIP-375 vector matrix to this path")
