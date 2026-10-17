@@ -954,6 +954,12 @@ class PSBTParser():
 
         for i, out in enumerate(self.psbt.tx.vout):
             if out.script_pubkey is None or len(out.script_pubkey.data) == 0:
+                # A BIP-375 silent payment output has no script until signing derives it,
+                # and BIP-375 allows it only in a v2 psbt; its sp_data is what the user is
+                # shown (see _assert_v2_complete)
+                scope = self.psbt.outputs[i] if i < len(self.psbt.outputs) else None
+                if getattr(self.psbt, "version", None) == 2 and getattr(scope, "sp_data", None) is not None:
+                    continue
                 raise InvalidPSBTError(
                     f"Output {i} has no script.",
                     code=RejectCode.UNDISPLAYABLE_OUTPUT,
