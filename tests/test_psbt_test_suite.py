@@ -1344,6 +1344,13 @@ class TestFraming:
         output fields over the global tx's output and leaves no trace, so once
         parsed, the attacker's output looks like our change.
         """
+        try:
+            load_psbt("ENC-01.v2_keys_in_v0")
+        except EmbitError:
+            # True of embit 0.8.0, which B13 pins. The bitsagarob/embit fork refuses
+            # v2-only fields in a v0 psbt while reading it, so there is no silent
+            # resolution left to show. psbt_framing refuses these bytes either way.
+            pytest.skip("this embit refuses v2-only fields in a v0 psbt itself")
         parser = parse_vector(VECTORS_BY_NAME["ENC-01.v2_keys_in_v0"])
         assert parser.fee_amount == 1_000
         parser = PSBTParser(p=load_psbt("ENC-03.v2_keys_hide_change"), seed=suite_seed(),

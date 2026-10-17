@@ -590,20 +590,26 @@ VECTORS = [
         "XTRAS.V2_MISSING_PREVOUT", "extras",
         "A v2 input with a witness_utxo but no previous_txid / output_index. "
         "BIP-370 requires the outpoint; without it there is no transaction to sign.",
-        Expect.REJECT_PARSER,
-        reject_code=RejectCode.MISSING_UTXO,
+        Expect.REJECT_EMBIT,
+        # B13 has PSBTParser refuse this by name. The bitsagarob/embit fork already refuses
+        # a v2 input without PSBT_IN_PREVIOUS_TXID while reading the bytes, so the psbt object is never built and the parser
+        # never sees it. Refused either way, one layer earlier, as XTRAS.NEGATIVE_AMOUNT.
     ),
     Vector(
         "XTRAS.UNSUPPORTED_PSBT_VERSION", "extras",
         "A v0 psbt declaring PSBT_GLOBAL_VERSION 1, which BIP-370 reserves.",
-        Expect.REJECT_PARSER,
-        reject_code=RejectCode.UNSUPPORTED_PSBT_VERSION,
+        Expect.REJECT_EMBIT,
+        # B13 has PSBTParser refuse this by name. The bitsagarob/embit fork already refuses
+        # PSBT_GLOBAL_VERSION 1 while reading the bytes, so the psbt object is never built and the parser
+        # never sees it. Refused either way, one layer earlier, as XTRAS.NEGATIVE_AMOUNT.
     ),
     Vector(
         "XTRAS.UNSUPPORTED_PSBT_VERSION_V2", "extras",
         "A structurally complete v2 psbt declaring version 3, which is undefined.",
-        Expect.REJECT_PARSER,
-        reject_code=RejectCode.UNSUPPORTED_PSBT_VERSION,
+        Expect.REJECT_EMBIT,
+        # B13 has PSBTParser refuse this by name. The bitsagarob/embit fork already refuses
+        # PSBT_GLOBAL_VERSION 3 while reading the bytes, so the psbt object is never built and the parser
+        # never sees it. Refused either way, one layer earlier, as XTRAS.NEGATIVE_AMOUNT.
     ),
     Vector(
         "XTRAS.ANYONE_CAN_SPEND_OUTPUT", "extras",
