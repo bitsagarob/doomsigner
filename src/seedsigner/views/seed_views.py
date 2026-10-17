@@ -1661,16 +1661,16 @@ class SeedDiscardView(View):
 
         if button_data[selected_menu_num] == self.KEEP:
             # Use skip_current_view=True to prevent BACK from landing on this warning screen
-            if self.is_pending_seed:
-                return Destination(SeedFinalizeView, skip_current_view=True)
-            else:
+            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
                 return Destination(SeedOptionsView, view_args={"seed": self.seed}, skip_current_view=True)
+            else:
+                return Destination(SeedFinalizeView, skip_current_view=True)
 
         elif button_data[selected_menu_num] == self.DISCARD:
-            if self.is_pending_seed:
-                self.controller.storage.clear_pending_seed()
-            else:
+            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
                 self.controller.discard_seed(self.seed)
+            else:
+                self.controller.storage.clear_pending_seed()
             return Destination(MainMenuView, clear_history=True)
 
 
@@ -2764,7 +2764,8 @@ class SeedWordsView(View):
 
         button_data = []
         num_pages = int(len(mnemonic)/words_per_page)
-        if self.page_index < num_pages - 1 or self.is_pending_seed:
+        is_finalized = any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds)
+        if self.page_index < num_pages - 1 or not is_finalized:
             button_data.append(self.NEXT)
         else:
             button_data.append(self.DONE)
@@ -2786,7 +2787,7 @@ class SeedWordsView(View):
             self.seed = None
 
         if button_data[selected_menu_num] == self.NEXT:
-            if self.is_pending_seed and self.page_index == num_pages - 1:
+            if not is_finalized and self.page_index == num_pages - 1:
                 return Destination(
                     SeedWordsBackupTestPromptView,
                     view_args=dict(seed=self.seed, bip85_data=self.bip85_data, share_index=self.share_index),

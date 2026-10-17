@@ -364,7 +364,9 @@ class TestSeedBackupFlows(FlowTest):
         expected_button = view.DONE if seed_argument == "stored" and page_index == 2 else view.NEXT
         assert screen.call_args.kwargs["button_data"] == [expected_button]
         assert destination.View_cls is (seed_views.SeedWordsBackupTestPromptView if page_index == 2 else seed_views.SeedWordsView)
-        assert destination.view_args["seed"] is seed
+        # B13 (#434) hands the None sentinel on for a pending seed, so the next View
+        # still knows it is pending; a seed that was passed in is handed on as it is
+        assert destination.view_args["seed"] is (None if seed_argument == "none" else seed)
         if page_index == 0:
             assert destination.view_args["page_index"] == 1
 
