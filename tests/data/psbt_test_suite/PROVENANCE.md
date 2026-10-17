@@ -30,6 +30,39 @@ meaning a coordinator may still add or remove inputs and outputs *after* we sign
 That voids the review, so it is refused (`RejectCode.TX_MODIFIABLE`) rather than
 merely warned about. A missing or zero `TX_MODIFIABLE` means final and is accepted.
 
+## Resync of 2026-09-17
+
+Re-vendored from the regenerated corpus (97 vectors). That regeneration fixed
+the BIP-371 taproot derivation encoding, so TX-09.* and TX-11.v1_bech32 now
+parse in embit, and it made TX-10, TX-14.cross_net and
+XTRAS.NETWORK_HRP_MISMATCH real traps rather than vacuous ones. It added the
+TX-19/20/21/22/23 families and the structural XTRAS vectors (missing utxo,
+unsupported version, undisplayable outputs, witness/non-witness mismatch).
+
+Local deviations from upstream:
+
+* `XTRAS.LOCKTIME_FUTURE.psbt` is kept though upstream dropped it (superseded by
+  TX-19.timestamp_future); TestTimelocks mutates it.
+* The TX-20 vectors were re-vendored on 2026-09-18 after two generator fixes
+  (P2WSH was built as a p2wpkh-shaped hash160, and OP_CLTV/OP_CSV had the wrong
+  opcode values); all three now carry a committed CLTV/CSV script.
+* Only three vectors are refused by embit itself: TX-04, TX-13.duplicate and
+  XTRAS.TRUNCATED_PSBT.
+
+## Follow-up of 2026-09-18
+
+Vectors added for the fixes brought over from the upstream SeedSigner PR review
+(#995/#977, #965/#1003, #1040, and the #1032 review thread), generated with the
+local psbt_faker: XTRAS.PREV_TX_TXID_MISMATCH(_V2), XTRAS.LEGACY_P2SH_WITNESS_ONLY,
+XTRAS.OP_RETURN_DIRECT_PUSH(_V2), TX-24.xpub_fingerprint_mismatch,
+TX-21.ms_foreign_quorum, TX-21.ms_foreign_quorum_no_xpubs and
+TX-21.ms_honest_change_no_xpubs. XTRAS.MIXED_INPUT_TYPES was re-vendored too: its
+legacy input used to spend its previous tx by a placeholder txid.
+
+The multisig vectors (TX-04/05, TX-13.*, TX-21.ms_*, TX-22.ms_*) are built
+against the suite's 2-of-3 `wsh(sortedmulti)` wallet at `m/48h/0h/0h/2h`; see
+`MULTISIG_DESCRIPTOR` in `tests/psbt_suite_util.py`.
+
 `XTRAS.HUGE_WITNESS_STACK.psbt` is deliberately **not** vendored: the original is
 1.5 MB of incompressible witness data. `psbt_suite_util.build_huge_witness_psbt()`
 synthesizes an equivalent at test time.
@@ -39,3 +72,23 @@ Regenerate the upstream corpus with:
 ```
 python psbt_test_suite/generate.py
 ```
+
+## Encoding vectors of 2026-09-28
+
+`ENC-01` … `ENC-10` (psbt_faker category `encoding`) attack the container rather
+than the transaction: PSBTv2-only fields injected into a v0 psbt (ENC-01/02/03/
+09/10), a global unsigned tx smuggled into a v2 psbt (ENC-05), an extra output
+map (ENC-04), a duplicated field (ENC-07) and a non-minimal compact size (ENC-08).
+
+embit 0.8.0 reads the v2 fields in a v0 psbt and overwrites the global tx's
+values with them. Afterwards nothing records the global tx they replaced, so
+these are refused on the raw bytes by `seedsigner.models.psbt_framing`
+(`RejectCode.WRONG_VERSION_FIELD` / `MALFORMED_ENCODING`), which every loader
+(QR scan, UR2, microSD) goes through before `PSBT.parse()`.
+
+Local deviation from upstream: `ENC-06.v2_outpoint_conflict` is expected to
+**parse**. Its only defect is a `previous_txid` that names an arbitrary outpoint.
+Without a `non_witness_utxo`, an offline signer cannot tell those bytes from an
+honest v2 spend. Signing it is safe: the input is segwit v0, and BIP-143 commits
+the signature to the `witness_utxo` amount and script, so the signature is
+invalid for any outpoint that does not hold exactly that.

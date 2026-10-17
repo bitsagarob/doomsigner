@@ -2,7 +2,7 @@ from gettext import gettext as _
 from seedsigner.helpers.l10n import mark_for_translation as _mft
 
 from binascii import hexlify
-from binascii import hexlify
+from dataclasses import dataclass
 
 from embit import bip32
 import logging
@@ -72,7 +72,16 @@ class PSBTSelectSeedView(View):
             raise Exception("No transaction currently loaded")
 
         if self.controller.psbt_seed:
-             if PSBTParser.has_matching_input_fingerprint(psbt=self.controller.psbt, seed=self.controller.psbt_seed, network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)):
+             from seedsigner.models.wif import WIFKey
+
+             if isinstance(self.controller.psbt_seed, WIFKey):
+                 # A raw key has no BIP32 tree to fingerprint, and the psbt an Electrum
+                 # watch-only single-address wallet exports has no derivation fields at
+                 # all -- so the fingerprint check below always said "no" and quietly
+                 # dropped a key that signs the transaction fine.
+                 if PSBTParser.wif_can_sign_any_input(psbt=self.controller.psbt, wif_key=self.controller.psbt_seed):
+                     return Destination(PSBTOverviewView)
+             elif PSBTParser.has_matching_input_fingerprint(psbt=self.controller.psbt, seed=self.controller.psbt_seed, network=self.settings.get_value(SettingsConstants.SETTING__NETWORK)):
                  # skip the seed prompt if a seed was previously selected and has matching input fingerprint
                  return Destination(PSBTOverviewView)
 
@@ -182,6 +191,10 @@ class PSBTSelectSeedView(View):
             if not connector:
                 return Destination(PSBTSelectSeedView, clear_history=True)
 
+            # A card with 2FA enabled cannot sign from SeedSigner (no phone-app code flow).
+            if seedkeeper_utils.satochip_2fa_blocks_signing(self, connector):
+                return Destination(PSBTSelectSeedView, clear_history=True)
+
             psbt = self.controller.psbt
             is_multisig_psbt = False
             try:
@@ -202,8 +215,11 @@ class PSBTSelectSeedView(View):
 
             if is_multisig_psbt:
                 try:
-                    parser = PSBTParser(psbt)
-                    parser.parse()
+                    parser = seedless_multisig_parser(self.controller, self.settings)
+                except InvalidPSBTError as e:
+                    # A deliberate refusal: the same screens as seed signing.
+                    logger.info("Refusing psbt from %s: %s (%s)", card_label, e, e.code)
+                    return refusal_destination(e)
                 except Exception as e:
                     logger.exception("Failed to parse PSBT with %s data", card_label)
                     self.run_screen(
@@ -277,6 +293,15 @@ class PSBTSelectSeedView(View):
                         master_fingerprint=master_fp,
                         network=network,
                     )
+                except InvalidPSBTError as e:
+                    # A deliberate refusal. Card signing gets the same screens as
+                    # seed signing -- see REJECT_PRESENTATION.
+                    logger.info("Refusing psbt from %s: %s (%s)", card_label, e, e.code)
+                    self.controller.psbt_parser = None
+                    self.controller.psbt_sign_with_satochip = False
+                    loading.stop()
+                    loading_stopped = True
+                    return refusal_destination(e)
                 except Exception as e:
                     logger.exception("Failed to parse PSBT with %s data", card_label)
                     loading.stop()
@@ -435,24 +460,286 @@ class PSBTBIP38PassphraseView(View):
         self.controller.psbt_seed = key
         return Destination(PSBTOverviewView)
 
-class PSBTOverviewView(View):
-    # Refusals that the user can legitimately act on, rather than simply having
-    # to reject the transaction. Appended to the technical reason.
-    #
-    # Budget: the warning screen's text box fits five lines at the body font, and
-    # TextArea renders past the bottom edge rather than raising, so an overlong
-    # message silently draws over the button. Reason + tip must stay within that
-    # for the longest realistic values AND a verbose translation.
-    REJECT_TIPS = {
-        # TRANSLATOR_NOTE: Points the user at the setting that controls this check
-        RejectCode.CHANGE_INDEX_TOO_FAR: _mft("See Change Gap Limit in Settings."),
-    }
+@dataclass
+class RejectPresentation:
+    """
+    How one RejectCode is shown to the user, and where the flow goes afterwards.
 
+    Every refusal used to render as the same generic "Invalid PSBT" warning carrying
+    the parser's technical message. That is still the default -- `screen` is None and
+    the parser's message is the body -- but a code that deserves its own severity,
+    headline, or exit route gets an entry here instead of a special case in the flow.
+
+    * screen / title / headline / text / icon / color / button: what is drawn. `text`
+      of None means "use the parser's own message", which is right where the message
+      names a specific offending value and wrong where fixed prose reads better.
+    * tip: appended to the message, for refusals the user can actually act on.
+    * clear_psbt: whether the psbt itself is discarded. False only for
+      SEED_CANNOT_SIGN, which is a seed/psbt mismatch rather than a bad psbt.
+    * clear_history: whether the redirect INTO this screen wipes the back stack, so
+      BACK cannot walk into a half-parsed psbt. False only where the user is meant to
+      step back into the flow they came from.
+    * destination_name: which View to land on once the screen is dismissed. Named as a
+      string because the table sits above the Views it points at.
+    """
+    screen: type = None
+    title: str = "Invalid PSBT"
+    headline: str = None
+    text: str = None
+    icon: str = None
+    color: str = None
+    button_label: str = "Done"
+    tip: str = None
+    clear_psbt: bool = True
+    clear_history: bool = True
+    destination_name: str = "MainMenuView"
+
+
+# Keyed by RejectCode. Anything absent renders with RejectPresentation() defaults, so
+# adding a code to the parser never leaves the flow without a screen.
+#
+# Budget: the warning screen's text box fits five lines at the body font, and TextArea
+# renders past the bottom edge rather than raising, so an overlong message silently
+# draws over the button. Message + tip must stay within that for the longest realistic
+# values AND a verbose translation. tests/test_psbt_refusal_screens.py pins this.
+REJECT_PRESENTATION = {
+    # TRANSLATOR_NOTE: Points the user at the setting that controls this check
+    RejectCode.CHANGE_INDEX_TOO_FAR: RejectPresentation(tip=_mft("See Change Gap Limit in Settings.")),
+
+    RejectCode.FORGED_OUTPUT_OWNERSHIP: RejectPresentation(
+        screen=DireWarningScreen,
+        # TRANSLATOR_NOTE: Title of the screen shown when a psbt lies about owning an output
+        title=_mft("Suspicious Transaction"),
+        headline=_mft("Likely an Attack!"),
+        text=_mft("The transaction's change/self-transfer outputs are not going back to your wallet."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    # Both are ownership claims that could not all be honest at once: several of
+    # this seed's keys on a single-key output, or the same seed named as both an
+    # ecdsa and a taproot key. Same threat as a forged output.
+    RejectCode.SURPLUS_DERIVATIONS: RejectPresentation(
+        screen=DireWarningScreen,
+        title=_mft("Suspicious Transaction"),
+        headline=_mft("Likely an Attack!"),
+        # TRANSLATOR_NOTE: A psbt's claims about which keys belong to this seed contradict each other
+        text=_mft("This transaction makes contradictory claims about which keys are yours."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.MIXED_DERIVATION_MAPS: RejectPresentation(
+        screen=DireWarningScreen,
+        title=_mft("Suspicious Transaction"),
+        headline=_mft("Likely an Attack!"),
+        text=_mft("This transaction makes contradictory claims about which keys are yours."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.MISLABELED_OUTPUT_OWNERSHIP: RejectPresentation(
+        screen=WarningScreen,
+        title=_mft("Transaction Problem"),
+        # TRANSLATOR_NOTE: A psbt labels an output that really pays this seed as another wallet's
+        text=_mft("An output that pays this seed is labelled as another wallet's. The transaction misdescribes itself."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    # The psbt describes its transaction twice, in fields meant for different
+    # psbt versions. No honest encoder does this, and the two copies can
+    # disagree about where the money goes, so it is treated as an attack.
+    RejectCode.WRONG_VERSION_FIELD: RejectPresentation(
+        screen=DireWarningScreen,
+        title=_mft("Suspicious Transaction"),
+        headline=_mft("Likely an Attack!"),
+        # TRANSLATOR_NOTE: A psbt carries fields that belong to a different psbt format version
+        text=_mft("This transaction describes itself twice, and the two versions may not match."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.MALFORMED_ENCODING: RejectPresentation(
+        screen=WarningScreen,
+        title=_mft("Transaction Problem"),
+        # TRANSLATOR_NOTE: The psbt's binary encoding breaks the format rules (e.g. a duplicated field)
+        text=_mft("This transaction is encoded in a way that other software could read differently."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.INCONSISTENT_FINGERPRINTS: RejectPresentation(
+        screen=WarningScreen,
+        title=_mft("Transaction Problem"),
+        # TRANSLATOR_NOTE: Two records in the psbt disagree about which wallet a key comes from
+        text=_mft("This transaction's records disagree about which wallet a key comes from."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.FORGED_INPUT_OWNERSHIP: RejectPresentation(
+        screen=WarningScreen,
+        # TRANSLATOR_NOTE: Title of the screen shown when a psbt misstates who owns an input
+        title=_mft("Transaction Problem"),
+        text=_mft("This transaction incorrectly claims that its input(s) belong to this seed."),
+        button_label=_mft("Discard transaction"),
+    ),
+
+    RejectCode.SEED_CANNOT_SIGN: RejectPresentation(
+        # An informational mismatch, not a warning, so it uses the neutral info icon and
+        # color rather than WarningScreen's alarming yellow edges.
+        # TODO: give this its own InfoScreen (LargeIconStatusScreen with the INFO icon
+        # and color baked in) rather than customizing the base screen at each call site.
+        screen=LargeIconStatusScreen,
+        # TRANSLATOR_NOTE: Title of the screen shown when the chosen seed can't sign the psbt
+        title=_mft("Seed Can't Sign"),
+        text=_mft("None of the inputs in this transaction are controlled by this seed."),
+        icon=SeedSignerIconConstants.INFO,
+        color=GUIConstants.INFO_COLOR,
+        button_label=_mft("Select a different seed"),
+        # The user is choosing a different seed for this psbt, not starting over, so the
+        # psbt is kept and only the seed and its parser are cleared.
+        clear_psbt=False,
+        clear_history=False,
+        destination_name="PSBTSelectSeedView",
+    ),
+}
+
+
+
+class PSBTRefusalView(View):
+    """
+    Renders one refused psbt, per REJECT_PRESENTATION, and routes onward.
+
+    Reached by redirect from PSBTOverviewView, so each refusal is a real View: it can be
+    screenshotted, its strings extracted for translation, and its routing asserted in a
+    flow test. Subclasses below fix `code` so the named cases can be referred to
+    directly.
+    """
+    code: str = None
+
+    def __init__(self, code: str = None, message: str = None):
+        super().__init__()
+        self.code = code if code is not None else self.code
+        self.message = message
+        self.presentation = REJECT_PRESENTATION.get(self.code, RejectPresentation())
+
+
+    def run(self):
+        p = self.presentation
+
+        if p.text is not None:
+            text = _(p.text)
+        else:
+            # The parser's own message, which names the offending value.
+            text = self.message or _("This transaction could not be verified.")
+            if p.tip:
+                # Single newline, not a blank line: the warning screen's text box fits
+                # about five lines and a blank one costs a whole line.
+                text += "\n" + _(p.tip)
+
+        kwargs = dict(
+            title=_(p.title),
+            status_headline=_(p.headline) if p.headline else None,
+            text=text,
+            button_data=[ButtonOption(p.button_label)],
+            show_back_button=False,
+        )
+        if p.icon:
+            kwargs["status_icon_name"] = p.icon
+        if p.color:
+            kwargs["status_color"] = p.color
+
+        self.run_screen(p.screen or WarningScreen, **kwargs)
+
+        if p.clear_psbt:
+            self.controller.psbt = None
+        self.controller.psbt_parser = None
+        self.controller.psbt_seed = None
+        # Whichever signer was selected, it isn't signing this psbt.
+        self.controller.psbt_sign_with_satochip = False
+
+        # Named rather than referenced directly so the table can sit above the Views it
+        # points at. test_every_reject_code_has_a_reachable_destination resolves them all.
+        return Destination(globals()[p.destination_name], clear_history=True)
+
+
+
+class PSBTOutputOwnershipClaimFailedView(PSBTRefusalView):
+    """
+    An output claims a key this seed does not derive -- how a fake change output is
+    dressed up as the user's own. Shows a dire warning and discards the psbt.
+    """
+    code = RejectCode.FORGED_OUTPUT_OWNERSHIP
+    DISCARD = ButtonOption("Discard transaction")
+
+
+
+class PSBTInputOwnershipClaimFailedView(PSBTRefusalView):
+    """
+    An input claims a key this seed does not derive. Unsignable rather than dangerous,
+    so a plain warning; the psbt is still discarded.
+    """
+    code = RejectCode.FORGED_INPUT_OWNERSHIP
+    DISCARD = ButtonOption("Discard transaction")
+
+
+
+class PSBTSeedCannotSignView(PSBTRefusalView):
+    """
+    This seed can't sign any of the psbt's inputs. Routes back to seed selection, keeping
+    the psbt, so the user can pick another.
+    """
+    code = RejectCode.SEED_CANNOT_SIGN
+    SELECT_DIFFERENT_SEED = ButtonOption("Select a different seed")
+
+
+# The named subclasses above, keyed by the code each one fixes. A code without one is
+# rendered by PSBTRefusalView itself; give a code its own subclass when it is worth
+# naming in a flow test or a screenshot, and it lands here automatically.
+REFUSAL_VIEWS = {cls.code: cls for cls in PSBTRefusalView.__subclasses__()}
+
+
+def refusal_destination(error: InvalidPSBTError) -> Destination:
+    """Where a refused psbt goes: the View for its code, carrying its message."""
+    presentation = REJECT_PRESENTATION.get(error.code, RejectPresentation())
+    return Destination(
+        REFUSAL_VIEWS.get(error.code, PSBTRefusalView),
+        view_args=dict(code=error.code, message=str(error)),
+        # Set clear_history to disable returning via BACK button
+        clear_history=presentation.clear_history,
+    )
+
+
+
+def seedless_multisig_parser(controller, settings) -> PSBTParser:
+    """
+    Parse the loaded multisig psbt with no key to verify against, for card signing:
+    the card holds the key, so there is no BIP32 tree here. Change can then only be
+    identified by the loaded descriptor, if any. Raises InvalidPSBTError on refusal.
+    """
+    parser = PSBTParser(
+        controller.psbt,
+        network=settings.get_value(SettingsConstants.SETTING__NETWORK),
+        multisig_descriptor=controller.multisig_wallet_descriptor,
+    )
+    parser.parse()
+    return parser
+
+
+
+class PSBTOverviewView(View):
     def __init__(self):
         super().__init__()
 
         self.loading_screen = None
-        self.parse_error: InvalidPSBTError = None
+
+        if (not self.controller.psbt_parser
+                and self.controller.psbt_seed is None
+                and self.controller.psbt_sign_with_satochip):
+            # Card multisig: the parser was dropped to re-read the psbt with a newly
+            # loaded descriptor (see MultisigWalletDescriptorView). There is no seed to
+            # hand the constructor, so it is parsed seedless, as it was the first time.
+            try:
+                self.controller.psbt_parser = seedless_multisig_parser(self.controller, self.settings)
+            except InvalidPSBTError as e:
+                logger.info("Refusing psbt: %s (%s)", e, e.code)
+                self.set_redirect(refusal_destination(e))
+            return
 
         if not self.controller.psbt_parser or self.controller.psbt_parser.seed != self.controller.psbt_seed:
             # The PSBTParser takes a while to read the PSBT. Run the loading screen while
@@ -469,42 +756,21 @@ class PSBTOverviewView(View):
                     network=self.settings.get_value(SettingsConstants.SETTING__NETWORK),
                     reference_time=getattr(self.controller, "psbt_source_time", None),
                     block_anchor=(_Controller.RELEASE_BLOCK_HEIGHT, _Controller.RELEASE_BLOCK_TIME),
+                    multisig_descriptor=self.controller.multisig_wallet_descriptor,
                 )
             except InvalidPSBTError as e:
-                # A deliberate refusal, not a crash: the psbt is parseable but
-                # unsafe to present. run() turns this into a warning screen.
-                self.loading_screen.stop()
-                self.loading_screen = None
+                # A deliberate refusal, not a crash: the psbt is parseable but unsafe to
+                # present, or not this seed's to sign. Redirect to the View that renders
+                # this code -- see REJECT_PRESENTATION.
                 logger.info("Refusing psbt: %s (%s)", e, e.code)
-                self.parse_error = e
-            except Exception as e:
+                self.set_redirect(refusal_destination(e))
+                return
+            finally:
                 self.loading_screen.stop()
-                raise e
 
 
     def run(self):
         from seedsigner.gui.screens.psbt_screens import PSBTOverviewScreen
-
-        if self.parse_error:
-            text = str(self.parse_error)
-            tip = self.REJECT_TIPS.get(self.parse_error.code)
-            if tip:
-                # Single newline, not a blank line: the warning screen's text box
-                # fits about five lines and a blank one costs a whole line.
-                text += "\n" + _(tip)
-
-            self.run_screen(
-                WarningScreen,
-                title=_("Invalid PSBT"),
-                status_headline=None,
-                text=text,
-                button_data=[ButtonOption("Done")],
-                show_back_button=False,
-            )
-            self.controller.psbt = None
-            self.controller.psbt_parser = None
-            self.controller.psbt_seed = None
-            return Destination(MainMenuView, clear_history=True)
 
         psbt_parser = self.controller.psbt_parser
 
@@ -512,10 +778,11 @@ class PSBTOverviewView(View):
         """
             change_data = [
                 {
-                    'address': 'bc1q............', 
-                    'amount': 397621401, 
-                    'claimed_fingerprints': ['22bde1a9', '73c5da0a'], 
-                    'claimed_derivation_paths': ['m/48h/1h/0h/2h/1/0', 'm/48h/1h/0h/2h/1/0']
+                    'output_index': 0,
+                    'address': 'bc1q............',
+                    'amount': 397621401,
+                    'verified_derivation_path':
+                        [2147483696, 2147483649, 2147483648, 2147483650, 1, 0],
                 }, {},
             ]
         """
@@ -524,15 +791,10 @@ class PSBTOverviewView(View):
         for change_output in change_data:
             # PSBTParser has already rejected any derivation a wallet could not
             # scan for, so all that's left here is which branch it sits on.
-            path_ints = bip32.parse_path(change_output["claimed_derivation_paths"][0])
-            if PSBTParser.is_change_branch(path_ints):
+            if PSBTParser.is_change_branch(change_output["verified_derivation_path"]):
                 num_change_outputs += 1
             else:
                 num_self_transfer_outputs += 1
-
-        # Everything is set. Stop the loading screen
-        if self.loading_screen:
-            self.loading_screen.stop()
 
         # Run the overview screen
         selected_menu_num = self.run_screen(
@@ -545,25 +807,100 @@ class PSBTOverviewView(View):
             num_change_outputs=num_change_outputs,
             destination_addresses=psbt_parser.destination_addresses,
             has_op_return=psbt_parser.op_return_data is not None,
+            is_high_fee_tx=psbt_parser.is_high_fee,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             self.controller.psbt_seed = None
             return Destination(BackStackView)
 
-        if psbt_parser.risk_warnings - RiskWarning.INFORMATIONAL:
-            return Destination(PSBTRiskWarningView)
+        if psbt_parser.unidentified_change_outputs:
+            return Destination(PSBTIdentifyChangeView)
 
-        # expecting p2sh (legacy multisig) and p2pkh to have no policy set
-        # skip change warning and psbt math view
-        if psbt_parser.policy == None:
-            return Destination(PSBTUnsupportedScriptTypeWarningView)
-        
-        elif psbt_parser.change_amount == 0:
-            return Destination(PSBTNoChangeWarningView)
+        return post_overview_destination(psbt_parser)
 
+
+
+def pending_risk_warnings(psbt_parser: PSBTParser) -> set[str]:
+    """The risk warnings PSBTRiskWarningView still has to show."""
+    warnings = psbt_parser.risk_warnings - RiskWarning.INFORMATIONAL
+    if psbt_parser.is_high_fee:
+        # PSBTHighFeeWarningView has already warned about the fee
+        warnings -= {RiskWarning.HIGH_FEE}
+    return warnings
+
+
+
+def post_overview_destination(psbt_parser: PSBTParser, skip_current_view: bool = False, high_fee_acknowledged: bool = False) -> Destination:
+    """Where review continues once the overview (and any interstitial after it) is done."""
+    if psbt_parser.is_high_fee and not high_fee_acknowledged:
+        return Destination(
+            PSBTHighFeeWarningView,
+            view_args={"warning_threshold_percent": psbt_parser.HIGH_FEES_WARNING_THRESHOLD},
+            skip_current_view=skip_current_view,
+        )
+
+    if pending_risk_warnings(psbt_parser):
+        return Destination(PSBTRiskWarningView, skip_current_view=skip_current_view)
+
+    # expecting p2sh (legacy multisig) and p2pkh to have no policy set
+    # skip change warning and psbt math view
+    if psbt_parser.policy == None:
+        return Destination(PSBTUnsupportedScriptTypeWarningView, skip_current_view=skip_current_view)
+
+    elif psbt_parser.change_amount == 0:
+        return Destination(PSBTNoChangeWarningView, skip_current_view=skip_current_view)
+
+    else:
+        return Destination(PSBTMathView, skip_current_view=skip_current_view)
+
+
+
+class PSBTIdentifyChangeView(View):
+    """
+    Some output looks like this multisig wallet's change, but the psbt carries no global
+    xpubs to tie its other cosigner keys to the inputs' wallet. A different wallet that
+    shares our key would look the same, so PSBTParser shows it as a payment. Only the
+    wallet's descriptor can identify it as change.
+    """
+    LOAD_DESCRIPTOR = ButtonOption("Load descriptor")
+    # TRANSLATOR_NOTE: Review the unidentified output as a payment, without loading a descriptor
+    CONTINUE_AS_PAYMENT = ButtonOption("Continue as payment")
+    CONTINUE = ButtonOption("Continue")
+
+    def run(self):
+        psbt_parser: PSBTParser = self.controller.psbt_parser
+        if not psbt_parser:
+            # Should not be able to get here
+            return Destination(MainMenuView)
+
+        if self.controller.multisig_wallet_descriptor:
+            # TRANSLATOR_NOTE: A loaded multisig descriptor did not match an output that looked like change
+            text = _("The loaded descriptor doesn't identify it. Shown as a payment.")
+            button_data = [self.CONTINUE]
         else:
-            return Destination(PSBTMathView)
+            # TRANSLATOR_NOTE: Multisig change can't be told apart from a payment without the wallet descriptor
+            text = _("Load descriptor to identify change.")
+            button_data = [self.LOAD_DESCRIPTOR, self.CONTINUE_AS_PAYMENT]
+
+        selected_menu_num = self.run_screen(
+            WarningScreen,
+            # TRANSLATOR_NOTE: Headline when multisig change cannot be identified
+            status_headline=_("Change Not Identified"),
+            text=text,
+            button_data=button_data,
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        if button_data[selected_menu_num] == self.LOAD_DESCRIPTOR:
+            from seedsigner.controller import Controller
+            from seedsigner.views.seed_views import LoadMultisigWalletDescriptorView
+            self.controller.resume_main_flow = Controller.FLOW__PSBT
+            return Destination(LoadMultisigWalletDescriptorView)
+
+        return post_overview_destination(psbt_parser, skip_current_view=True)
 
 
 
@@ -579,6 +916,8 @@ class PSBTRiskWarningView(View):
         RiskWarning.HIGH_FEE: _mft("The fee is an unusually large share of this transaction."),
         # TRANSLATOR_NOTE: The fee per byte is high compared to recent blocks.
         RiskWarning.HIGH_FEE_RATE: _mft("The fee rate is high compared to recent blocks."),
+        # TRANSLATOR_NOTE: The coordinator did not include the previous transactions that prove the input amounts
+        RiskWarning.UNVERIFIED_INPUT_AMOUNTS: _mft("Input amounts are unproven (no previous transactions); the fee may be higher than shown."),
         RiskWarning.DUST_OUTPUT: _mft("One output is below the dust threshold and may be unspendable."),
         RiskWarning.FUTURE_LOCKTIME: _mft("This transaction cannot confirm until a future date."),
         # TRANSLATOR_NOTE: The transaction is locked years beyond when it was created.
@@ -586,6 +925,9 @@ class PSBTRiskWarningView(View):
         # TRANSLATOR_NOTE: BIP-68 relative timelock; the delay runs from when the
         # input confirmed, so no fixed date can be shown.
         RiskWarning.RELATIVE_TIMELOCK: _mft("An input is time-locked and cannot be spent yet."),
+        # TRANSLATOR_NOTE: An output's script (CLTV/CSV) locks the funds it
+        # receives, so whoever gets them cannot spend them until later.
+        RiskWarning.SCRIPT_TIMELOCK: _mft("An output is time-locked by its script; those funds cannot be spent until later."),
         RiskWarning.RBF: _mft("This transaction is marked replaceable (RBF)."),
     }
 
@@ -595,9 +937,10 @@ class PSBTRiskWarningView(View):
             # Should not be able to get here
             return Destination(MainMenuView)
 
+        pending = pending_risk_warnings(psbt_parser)
         messages = []
         for code in self.RISK_TEXT:
-            if code not in psbt_parser.risk_warnings or code in RiskWarning.INFORMATIONAL:
+            if code not in pending:
                 continue
             messages.append(_(self.RISK_TEXT[code]))
 
@@ -673,6 +1016,33 @@ class PSBTNoChangeWarningView(View):
 
 
 
+class PSBTHighFeeWarningView(View):
+    def __init__(self, warning_threshold_percent: int):
+        super().__init__()
+        
+        self.warning_threshold_percent = warning_threshold_percent
+    
+    def run(self):
+        selected_menu_num = self.run_screen(
+            DireWarningScreen,
+            status_headline=_("High Fee!"),
+            # TRANSLATOR_NOTE: Variable is the percentage of the total output value (excluding change) that the fee exceeds. (e.g. "This transaction has a fee higher than 25% of the total output value (excluding change).")
+            text=_("This transaction has a fee higher than {}% of the total output value (excluding change).").format(self.warning_threshold_percent),
+            button_data=[ButtonOption("Continue")],
+        )
+
+        if selected_menu_num == RET_CODE__BACK_BUTTON:
+            return Destination(BackStackView)
+
+        # A high fee can come with other risk warnings and/or no change
+        return post_overview_destination(
+            self.controller.psbt_parser,
+            skip_current_view=True,  # Prevent going BACK to WarningViews
+            high_fee_acknowledged=True,
+        )
+
+
+
 class PSBTMathView(View):
     """
         Follows the Overview pictogram. Shows:
@@ -701,6 +1071,7 @@ class PSBTMathView(View):
             num_recipients=psbt_parser.num_destinations,
             fee_amount=psbt_parser.fee_amount,
             change_amount=psbt_parser.change_amount,
+            is_high_fee_tx=psbt_parser.is_high_fee,
         )
 
         if selected_menu_num == RET_CODE__BACK_BUTTON:
@@ -935,17 +1306,19 @@ class PSBTChangeDetailsView(View):
         """
             change_data:
             {
-                'address': 'bc1q............', 
-                'amount': 397621401, 
-                'claimed_fingerprints': ['22bde1a9', '73c5da0a'], 
-                'claimed_derivation_paths': ['m/48h/1h/0h/2h/1/0', 'm/48h/1h/0h/2h/1/0']
+                'output_index': 0,
+                'address': 'bc1q............',
+                'amount': 397621401,
+                'verified_derivation_path':
+                    [2147483696, 2147483649, 2147483648, 2147483650, 1, 0],
             }
         """
 
-        # Single-sig verification is easy. We expect to find a single fingerprint
-        # and derivation path.
-        claimed_fingerprints = change_data.get("claimed_fingerprints") or []
-        claimed_derivation_paths = change_data.get("claimed_derivation_paths") or []
+        # The parser proved this derivation path belongs to this seed before recording
+        # the output as change, so the view reads the verified path rather than the
+        # coordinator's claimed fingerprint/derivation strings.
+        verified_derivation_path = change_data.get("verified_derivation_path")
+        path_ints = list(verified_derivation_path) if verified_derivation_path else []
 
         if self.controller.psbt_seed:
             seed_fingerprint = self.controller.psbt_seed.get_fingerprint(
@@ -955,28 +1328,10 @@ class PSBTChangeDetailsView(View):
             master_fp = getattr(psbt_parser, "master_fingerprint", None)
             seed_fingerprint = hexlify(master_fp).decode() if master_fp else None
 
-        if seed_fingerprint:
-            if seed_fingerprint not in claimed_fingerprints:
-                # TODO: Something is wrong with this psbt(?). Reroute to warning?
-                return Destination(NotYetImplementedView)
-            index = claimed_fingerprints.index(seed_fingerprint)
-        else:
-            index = 0 if claimed_fingerprints else None
-            if index is not None:
-                seed_fingerprint = claimed_fingerprints[index]
-
-        claimed_derivation_path = ""
-        if index is not None and index < len(claimed_derivation_paths):
-            claimed_derivation_path = claimed_derivation_paths[index]
-
         # 'm/84h/1h/0h/1/0' would be a change addr while 'm/84h/1h/0h/0/0' is a self-receive.
-        # Safe to read from the claim here: PSBTParser has already refused any path whose
-        # prefix does not match one the inputs demonstrate, so an output that reaches this
-        # point sits where this wallet actually keeps its keys.
-        if claimed_derivation_path:
-            path_ints = bip32.parse_path(claimed_derivation_path)
-        else:
-            path_ints = []
+        # Safe to read from the verified path here: PSBTParser has already refused any
+        # path whose prefix does not match one the inputs demonstrate, so an output that
+        # reaches this point sits where this wallet actually keeps its keys.
         is_change_derivation_path = PSBTParser.is_change_branch(path_ints)
         derivation_path_addr_index = path_ints[-1] & 0x7FFFFFFF if path_ints else 0
 
@@ -991,7 +1346,6 @@ class PSBTChangeDetailsView(View):
 
         is_change_addr_verified = False
         if psbt_parser.is_multisig:
-            print("isMultisig")
             # if the known-good multisig descriptor is already onboard:
             if self.controller.multisig_wallet_descriptor:
                 is_change_addr_verified = psbt_parser.verify_multisig_output(
@@ -1026,7 +1380,6 @@ class PSBTChangeDetailsView(View):
 
         else:
             # Single sig
-            print("isSinglesig")
             try:
                 from embit import script
                 from embit.networks import NETWORKS
@@ -1099,7 +1452,7 @@ class PSBTChangeDetailsView(View):
             amount=change_data.get("amount"),
             is_multisig=psbt_parser.is_multisig,
             fingerprint=seed_fingerprint or "",
-            derivation_path=claimed_derivation_path or "",
+            derivation_path=bip32.path_to_str(path_ints) if path_ints else "",
             is_change_derivation_path=is_change_derivation_path,
             derivation_path_addr_index=derivation_path_addr_index,
             is_change_addr_verified=is_change_addr_verified,
@@ -1124,10 +1477,14 @@ class PSBTChangeDetailsView(View):
             from seedsigner.views.seed_views import LoadMultisigWalletDescriptorView
             self.controller.resume_main_flow = Controller.FLOW__PSBT
             return Destination(LoadMultisigWalletDescriptorView)
-            
+
 
 
 class PSBTAddressVerificationFailedView(View):
+    """
+    Reached when a change or self-transfer output fails address verification. Shows a dire
+    warning and discards the psbt to the main menu.
+    """
     def __init__(self, is_change: bool = True, is_multisig: bool = False):
         super().__init__()
         self.is_change = is_change
@@ -1151,16 +1508,21 @@ class PSBTAddressVerificationFailedView(View):
             show_back_button=False,
         )
 
-        # We're done with this PSBT. Route back to MainMenuView which always
-        #   clears all ephemeral data (except in-memory seeds).
+        # We're done with this PSBT. Route back to MainMenuView, which clears all ephemeral
+        # data (except in-memory seeds).
+        # Set clear_history to disable returning via BACK button.
         return Destination(MainMenuView, clear_history=True)
 
 
 
 class PSBTOpReturnView(View):
     """
-        Shows the OP_RETURN data
+        Shows the OP_RETURN data, one output at a time.
     """
+    def __init__(self, op_return_num: int = 0):
+        super().__init__()
+        self.op_return_num = op_return_num
+
     def run(self):
         from seedsigner.gui.screens.psbt_screens import PSBTOpReturnScreen
         psbt_parser: PSBTParser = self.controller.psbt_parser
@@ -1176,11 +1538,14 @@ class PSBTOpReturnView(View):
             PSBTOpReturnScreen,
             title=title,
             button_data=button_data,
-            op_return_data=psbt_parser.op_return_data,
+            op_return_data=psbt_parser.op_return_payloads[self.op_return_num],
         )
         
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
+
+        if self.op_return_num < len(psbt_parser.op_return_payloads) - 1:
+            return Destination(PSBTOpReturnView, view_args={"op_return_num": self.op_return_num + 1})
 
         return Destination(PSBTFinalizeView)
 

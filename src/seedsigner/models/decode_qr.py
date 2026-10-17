@@ -8,7 +8,7 @@ from datetime import datetime
 
 from binascii import a2b_base64, b2a_base64
 from enum import IntEnum
-from embit import psbt, bip39, ec, bip32
+from embit import bip39, ec, bip32
 
 _ZBAR_IMPORT_ERROR = None
 try:
@@ -33,6 +33,8 @@ from urtypes.bytes import Bytes
 from base64 import b32encode, b32decode
 
 from seedsigner.helpers.ur2.ur_decoder import URDecoder
+from seedsigner.models.psbt_framing import check_psbt_framing, parse_psbt
+from seedsigner.models.psbt_parser import InvalidPSBTError
 from seedsigner.models.qr_type import QRType
 from seedsigner.models.seed import Seed
 from seedsigner.models.aezeed import has_valid_checksum as aezeed_has_valid_checksum
@@ -257,6 +259,11 @@ class DecodeQR:
     #   `get_data` and let each QRDecoder class return whatever it needs to as a
     #   str, tuple, dict, etc?
     def get_psbt(self):
+        """
+        The scanned psbt, or None if it can't be read. Raises InvalidPSBTError when
+        it can be read but its framing is refused (see psbt_framing), so the caller
+        can say why.
+        """
         if self.complete:
             data = self.get_data_psbt()
             if data != None:
@@ -264,8 +271,10 @@ class DecodeQR:
                 if sp_psbt is not None:
                     return sp_psbt
                 try:
-                    return psbt.PSBT.parse(data)
-                except:
+                    return parse_psbt(data)
+                except InvalidPSBTError:
+                    raise
+                except Exception:
                     return None
         return None
 
@@ -299,6 +308,11 @@ class DecodeQR:
         except ImportError:
             # embit without silent payments support. Fall through to stock.
             return None
+
+        # The same framing refusals as every other psbt (see psbt_framing): without
+        # this, a psbt carrying silent payment fields would skip them entirely. Outside
+        # the try below, so a refusal raises InvalidPSBTError to the caller.
+        check_psbt_framing(data)
 
         try:
             parsed = SilentPaymentsPSBT.parse(data)
@@ -764,7 +778,9 @@ class DecodeQR:
                 return QRType.WALLET__GENERIC
 
             # Seed
-            if re.search(r'\d{48,96}', s):
+            # The whole payload, not merely a digit run inside something else (a
+            # SettingsQR with a long number in it is not a seed).
+            if re.fullmatch(r'(?:\d{4}){12,24}', s.strip()):
                 return QRType.SEED__SEEDQR
 
             # Bitcoin Address
@@ -866,8 +882,12 @@ class DecodeQR:
     def is_base64_psbt(s):
         try:
             if DecodeQR.is_base64(s):
-                psbt.PSBT.parse(a2b_base64(s))
+                parse_psbt(a2b_base64(s))
                 return True
+        except InvalidPSBTError:
+            # Recognisably a psbt, but a refused one: still route it as a psbt so
+            # the refusal is shown rather than an "unknown QR" error.
+            return True
         except Exception:
             return False
         return False
@@ -876,7 +896,9 @@ class DecodeQR:
     @staticmethod
     def is_base43_psbt(s):
         try:
-            psbt.PSBT.parse(DecodeQR.base43_decode(s))
+            parse_psbt(DecodeQR.base43_decode(s))
+            return True
+        except InvalidPSBTError:
             return True
         except Exception:
             return False
@@ -1265,7 +1287,13 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
                 if len(self.seed_phrase) > 0:
                     if not self.has_valid_word_count():
                         return DecodeQRStatus.INVALID
-                    self.seed_type = "bip39"
+                    # Hand-transcribed SeedQRs are exactly where a wrong digit is
+                    # expected, and the checksum is what catches it. Unchecked, the
+                    # bad mnemonic only failed later, as a System Error.
+                    seed_type = self._classify_mnemonic(self.seed_phrase)
+                    if seed_type is None:
+                        return DecodeQRStatus.INVALID
+                    self.seed_type = seed_type
                     self.complete = True
                     self.collected_segments = 1
                     return DecodeQRStatus.COMPLETE
@@ -1296,23 +1324,10 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
                 if not self.has_valid_word_count():
                     return DecodeQRStatus.INVALID
 
-                is_valid_bip39 = False
-                try:
-                    Seed(seed_phrase_list, passphrase="", wordlist_language_code=self.wordlist_language_code)
-                    is_valid_bip39 = True
-                except Exception:
-                    is_valid_bip39 = False
-
-                is_valid_aezeed = len(seed_phrase_list) == 24 and aezeed_has_valid_checksum(seed_phrase_list, self.word_to_index)
-
-                if is_valid_aezeed and is_valid_bip39:
-                    self.seed_type = "ambiguous"
-                elif is_valid_aezeed:
-                    self.seed_type = "aezeed"
-                elif is_valid_bip39:
-                    self.seed_type = "bip39"
-                else:
+                seed_type = self._classify_mnemonic(seed_phrase_list)
+                if seed_type is None:
                     return DecodeQRStatus.INVALID
+                self.seed_type = seed_type
 
                 self.seed_phrase = seed_phrase_list
                 self.complete = True
@@ -1358,6 +1373,29 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
         if self.complete:
             return self.seed_type
         return None
+
+    def _classify_mnemonic(self, words: list) -> str | None:
+        """
+        "bip39", "aezeed", or "ambiguous" (both checksums pass) for a mnemonic whose
+        checksum holds; None when neither does.
+        """
+        is_valid_bip39 = False
+        try:
+            Seed(words, passphrase="", wordlist_language_code=self.wordlist_language_code)
+            is_valid_bip39 = True
+        except Exception:
+            is_valid_bip39 = False
+
+        is_valid_aezeed = len(words) == 24 and aezeed_has_valid_checksum(words, self.word_to_index)
+
+        if is_valid_aezeed and is_valid_bip39:
+            return "ambiguous"
+        elif is_valid_aezeed:
+            return "aezeed"
+        elif is_valid_bip39:
+            return "bip39"
+        return None
+
 
     def has_valid_word_count(self):
         return len(self.seed_phrase) in (12, 15, 18, 21, 24)
@@ -1487,10 +1525,14 @@ class SignMessageQrDecoder(BaseSingleFrameQrDecoder):
 
             signmessage {derivation_path} ascii:{message}
         """
-        parts = segment.split()
+        # Split off the header only: the message itself may contain spaces or
+        # another "ascii:". A malformed payload is INVALID, never an IndexError --
+        # this decoder runs inside the camera loop, where an exception is a crash.
+        parts = segment.split(maxsplit=2)
+        if len(parts) < 3 or ":" not in parts[2]:
+            return DecodeQRStatus.INVALID
         self.derivation_path = parts[1].replace("h", "'")
-        fmt = parts[2].split(":")[0]
-        self.message = segment.split(f"{fmt}:")[1]
+        fmt, self.message = parts[2].split(":", 1)
 
         # TODO: support formats other than ascii?
         if fmt != "ascii":

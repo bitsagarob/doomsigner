@@ -129,6 +129,107 @@ def _normalize_date_input(s: str) -> str:
         s = s.replace(ch, "-")
     return s
 
+
+def _list_sd_files(dir_path) -> list:
+    """List selectable regular files in a microSD directory.
+
+    Files whose names start with '-' are excluded: SD filenames are attacker-
+    controlled and are passed to gpg/sha256sum as positional operands (with the
+    directory as cwd), where a name like '--output=x' would be parsed as a
+    command option. Belt-and-suspenders: the gpg invocations also pass '--'
+    before filename operands.
+    """
+    return [
+        f
+        for f in os.listdir(dir_path)
+        if (
+            not f.startswith(('.', '-'))
+            and f != '__MACOSX'
+            and os.path.isfile(os.path.join(dir_path, f))
+        )
+    ]
+
+
+def _manifest_names_are_safe(manifest_path) -> bool:
+    """True if every filename listed in a sha256 manifest is a bare, non-option
+    name. An attacker-supplied manifest could otherwise name absolute or
+    relative paths ('../../etc/passwd') or option-like names, which sha256sum
+    (or the Python fallback) would resolve outside the microSD directory.
+    """
+    try:
+        with open(manifest_path, "r") as mf:
+            for line in mf:
+                parts = line.strip().split()
+                if len(parts) < 2:
+                    continue
+                name = parts[-1].lstrip("*")
+                if not name or name.startswith("-") or Path(name).name != name:
+                    return False
+        return True
+    except Exception:
+        return False
+
+
+_CLEARSIGN_BEGIN = b"-----BEGIN PGP SIGNED MESSAGE-----"
+_CLEARSIGN_SIG_END = b"-----END PGP SIGNATURE-----"
+
+
+def _clearsigned_has_unsigned_content(file_path) -> bool:
+    """True if a clearsigned file carries text the signature does not cover.
+
+    `gpg --verify` reports a good signature for a clearsigned block even when
+    arbitrary lines are added before or after it (or a second signed block is
+    appended), so a manifest read as a whole would let anyone add a
+    "<hash>  <file>" line and have it reported as signed. Files that are not
+    clearsigned return False.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    if _CLEARSIGN_BEGIN not in data:
+        return False
+    if data.count(_CLEARSIGN_BEGIN) != 1 or data.count(_CLEARSIGN_SIG_END) != 1:
+        return True
+    before, _, rest = data.partition(_CLEARSIGN_BEGIN)
+    _, _, after = rest.partition(_CLEARSIGN_SIG_END)
+    return bool(before.strip() or after.strip())
+
+
+def _check_manifest_lines(lines, dir_path):
+    """Hash-check "<sha256>  <name>" manifest lines against files in dir_path.
+
+    Returns (verified, failed, missing) name lists. Only bare filenames inside
+    dir_path are hashed: a crafted manifest must not be able to name absolute
+    or relative paths (read oracle) or option-like names.
+    """
+    verified, failed, missing = [], [], []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        checksum, name = parts[0], parts[-1].lstrip("*")
+        if not name or name.startswith("-") or Path(name).name != name:
+            continue
+        file_path = Path(dir_path) / name
+        if file_path.exists():
+            h = hashlib.sha256()
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() == checksum.lower():
+                verified.append(name)
+            else:
+                failed.append(name)
+        else:
+            missing.append(name)
+    return verified, failed, missing
+
+
 # BIP85 GPG application numbers per updated spec.
 # RSA derivation path (v4, the default): m/83696968'/828365'/{key_bits}'/{key_index}'[/{sub_key}']
 # RSA derivation path (v2/v3 legacy):   m/83696968'/828365'/0'/{key_bits}'/{key_index}'[/{sub_key}']
@@ -547,6 +648,8 @@ def _parse_gpg_verify_status(stdout: str, stderr: str) -> dict:
     Status codes are locale-independent, unlike the human-readable stderr text.
     Returns a dict with:
       valid_fprs:  primary-key fingerprints (40 hex chars) from each VALIDSIG line
+                   (its last field; the first field is the signing key, which
+                   is a subkey when a subkey signed)
       bad_sig:     True if any ERRSIG/BADSIG status was seen
       no_pubkey:   True if NO_PUBKEY was seen (signing key missing from keyring)
       no_signature: True if gpg reported the file contains no signature
@@ -560,7 +663,11 @@ def _parse_gpg_verify_status(stdout: str, stderr: str) -> dict:
         parts = line[len("[GNUPG:] "):].split(" ")
         code = parts[0]
         if code == "VALIDSIG" and len(parts) > 1:
-            valid_fprs.append(parts[1].upper())
+            # VALIDSIG <sig-key-fpr> <date> <ts> <expire> <ver> <reserved>
+            #          <pk-algo> <hash-algo> <sig-class> [<primary-key-fpr>]
+            # The trusted-signer whitelist holds primary-key fingerprints.
+            fpr = parts[10] if len(parts) > 10 else parts[1]
+            valid_fprs.append(fpr.upper())
         elif code in ("ERRSIG", "BADSIG"):
             bad_sig = True
         elif code == "NO_PUBKEY":
@@ -3300,15 +3407,7 @@ class ToolsGPGDecryptMessageView(View):
                         return Destination(BackStackView)
 
                 file_list_path = resolve_microsd_images_dir()
-                file_list = [
-                    f
-                    for f in os.listdir(file_list_path)
-                    if (
-                        not f.startswith('.')
-                        and f != '__MACOSX'
-                        and os.path.isfile(os.path.join(file_list_path, f))
-                    )
-                ]
+                file_list = _list_sd_files(file_list_path)
                 buttons = [ButtonOption(file) for file in file_list]
                 if not buttons:
                     self.run_screen(
@@ -3934,15 +4033,7 @@ class ToolsGPGEncryptFileView(View):
                 return Destination(BackStackView)
 
         file_list_path = resolve_microsd_images_dir()
-        file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-            )
-        ]
+        file_list = _list_sd_files(file_list_path)
         buttons = [ButtonOption(file) for file in file_list]
         if not buttons:
             self.run_screen(
@@ -4072,7 +4163,9 @@ class ToolsGPGEncryptFileView(View):
                 cmd.extend(["--pinentry-mode", "loopback", "--passphrase", passphrase])
             if sign_key is not None:
                 cmd.extend(["--local-user", sign_key["fpr"], "--sign"])
-            cmd.extend(["--recipient", rec_key["fpr"], "--encrypt", filename])
+            # "--" ends option parsing so SD-sourced filenames can never be
+            # parsed as gpg options (see _list_sd_files)
+            cmd.extend(["--recipient", rec_key["fpr"], "--encrypt", "--", filename])
             result = run(cmd, capture_output=True, text=True, cwd=file_list_path)
             self.loading_screen.stop()
             return result
@@ -4134,15 +4227,7 @@ class ToolsGPGDecryptFileView(View):
                 return Destination(BackStackView)
 
         file_list_path = resolve_microsd_images_dir()
-        file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-            )
-        ]
+        file_list = _list_sd_files(file_list_path)
         buttons = [ButtonOption(file) for file in file_list]
         if not buttons:
             self.run_screen(
@@ -4198,7 +4283,9 @@ class ToolsGPGDecryptFileView(View):
             ]
             if passphrase is not None:
                 cmd.extend(["--pinentry-mode", "loopback", "--passphrase", passphrase])
-            cmd.append(filename)
+            # "--" ends option parsing so SD-sourced filenames can never be
+            # parsed as gpg options (see _list_sd_files)
+            cmd.extend(["--", filename])
             result = run(cmd, capture_output=True, text=True, cwd=file_list_path)
             self.loading_screen.stop()
             return result
@@ -4371,16 +4458,9 @@ class ToolsGPGVerifyFileView(View):
 
         file_list_path = resolve_microsd_images_dir()
 
-        # Get only the visible, valid files
-        visible_file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                    not f.startswith('.') and  # Ignore hidden files (like .DS_Store)
-                    f != '__MACOSX' and  # Ignore specific macOS metadata folder
-                    os.path.isfile(os.path.join(file_list_path, f))  # Only include actual files
-            )
-        ]
+        # Get only the visible, valid files (dash-leading names are excluded;
+        # they would be parsed as gpg options; see _list_sd_files)
+        visible_file_list = _list_sd_files(file_list_path)
 
         # Build button options
         verify_file_buttons = [ButtonOption(f) for f in visible_file_list]
@@ -4427,7 +4507,10 @@ class ToolsGPGVerifyFileView(View):
                     show_back_button=True,
                 )
                 return Destination(BackStackView)
-            cmd = ["gpg", "--status-fd=1", "--verify", verify_file_name, filechecked]
+            # "--" ends option parsing so SD-sourced filenames can never be
+            # parsed as gpg options (see _list_sd_files)
+            cmd = ["gpg", "--status-fd=1", "--verify", "--", verify_file_name, filechecked]
+            detached = True
         else:
             filechecked = verify_file_name
             sig_candidate = None
@@ -4437,10 +4520,11 @@ class ToolsGPGVerifyFileView(View):
                     sig_candidate = candidate
                     break
             cmd = ["gpg", "--status-fd=1", "--verify"]
+            detached = bool(sig_candidate)
             if sig_candidate:
-                cmd.extend([sig_candidate, verify_file_name])
+                cmd.extend(["--", sig_candidate, verify_file_name])
             else:
-                cmd.append(verify_file_name)
+                cmd.extend(["--", verify_file_name])
 
         self.loading_screen = LoadingScreenThread(
             text="Checking Signature\n\n\n\n\n\n(May take a while)"
@@ -4472,7 +4556,17 @@ class ToolsGPGVerifyFileView(View):
         status = _parse_gpg_verify_status(data.stdout, data.stderr)
 
         valid_sig = bool(status["valid_fprs"]) and not status["bad_sig"]
-        if status["bad_sig"]:
+        # A clearsigned file only proves the text inside its signed block. Text
+        # around it (or a second block) is not covered by the signature, yet
+        # gpg still reports VALIDSIG, so refuse the file outright.
+        unsigned_content = (
+            not detached
+            and _clearsigned_has_unsigned_content(file_list_path / filechecked)
+        )
+        if unsigned_content:
+            valid_sig = False
+            failed_reason = "File has text outside\nthe signed block"
+        elif status["bad_sig"]:
             failed_reason = "Invalid Signature\nfor file..."
         elif status["no_pubkey"]:
             failed_reason = "Signing key not found.\nImport the public key first."
@@ -4564,13 +4658,40 @@ class ToolsGPGVerifyFileView(View):
                 failed_files = []
                 missing_files = []
 
-                if shutil.which("sha256sum"):
+                # If the manifest lists any path-like or option-like name, fall
+                # back to the in-Python verifier: `sha256sum --check` resolves
+                # manifest paths itself, so its OK/FAILED output would be an
+                # arbitrary-file read oracle for a crafted manifest.
+                manifest_path = file_list_path / filechecked
+                if not detached:
+                    # Embedded (clearsigned/inline) signature: hash-check only
+                    # the text gpg says the signature covers, never the raw
+                    # file. sha256sum would read the whole file, so it is not
+                    # used here.
+                    self.loading_screen = LoadingScreenThread(text="Checking SHA256\n\n\n\n\n\n(This takes a while)")
+                    self.loading_screen.start()
+                    signed = run(
+                        ["gpg", "--batch", "--status-fd=2", "--output", "-",
+                         "--decrypt", "--", filechecked],
+                        capture_output=True,
+                        cwd=str(file_list_path),
+                    )
+                    signed_text = signed.stdout if getattr(signed, "returncode", 0) == 0 else ""
+                    if isinstance(signed_text, bytes):
+                        signed_text = signed_text.decode("utf-8", errors="replace")
+                    verified_files, failed_files, missing_files = _check_manifest_lines(
+                        (signed_text or "").splitlines(), file_list_path
+                    )
+                    self.loading_screen.stop()
+                elif shutil.which("sha256sum") and _manifest_names_are_safe(manifest_path):
                     from seedsigner.models.settings import Settings
 
+                    # "--" ends option parsing so an attacker-supplied manifest
+                    # filename can never be parsed as a sha256sum option
                     if Settings.is_seedsigner_os():
-                        sha256_cmd = ["sha256sum", "-c", filechecked]
+                        sha256_cmd = ["sha256sum", "-c", "--", filechecked]
                     else:
-                        sha256_cmd = ["sha256sum", "--check", filechecked, "--ignore-missing"]
+                        sha256_cmd = ["sha256sum", "--check", "--ignore-missing", "--", filechecked]
 
                     self.loading_screen = LoadingScreenThread(
                         text="Checking SHA256\n\n\n\n\n\n(This takes a while)"
@@ -4600,28 +4721,10 @@ class ToolsGPGVerifyFileView(View):
                 else:
                     self.loading_screen = LoadingScreenThread(text="Checking SHA256\n\n\n\n\n\n(This takes a while)")
                     self.loading_screen.start()
-                    manifest_path = file_list_path / filechecked
                     with open(manifest_path, "r") as mf:
-                        for line in mf:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            parts = line.split()
-                            if len(parts) < 2:
-                                continue
-                            checksum, name = parts[0], parts[-1].lstrip("*")
-                            file_path = file_list_path / name
-                            if file_path.exists():
-                                h = hashlib.sha256()
-                                with open(file_path, "rb") as f:
-                                    for chunk in iter(lambda: f.read(65536), b""):
-                                        h.update(chunk)
-                                if h.hexdigest().lower() == checksum.lower():
-                                    verified_files.append(name)
-                                else:
-                                    failed_files.append(name)
-                            else:
-                                missing_files.append(name)
+                        verified_files, failed_files, missing_files = _check_manifest_lines(
+                            mf, file_list_path
+                        )
                     self.loading_screen.stop()
 
                 for file in missing_files:
@@ -4692,15 +4795,7 @@ class ToolsGPGSignFileView(View):
 
         file_list_path = resolve_microsd_images_dir()
 
-        file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-            )
-        ]
+        file_list = _list_sd_files(file_list_path)
 
         buttons = [ButtonOption(file) for file in file_list]
 
@@ -4776,6 +4871,9 @@ class ToolsGPGSignFileView(View):
                 f"{filename}.sig",
                 "--armor",
                 "--detach-sign",
+                # "--" ends option parsing so SD-sourced filenames can never be
+                # parsed as gpg options (see _list_sd_files)
+                "--",
                 filename,
             ],
             cwd=file_list_path,
@@ -4831,14 +4929,8 @@ class ToolsGPGSignManifestView(View):
 
         file_list = [
             f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-                and not f.endswith('.sig')
-                and f != manifest_name
-            )
+            for f in _list_sd_files(file_list_path)
+            if not f.endswith('.sig') and f != manifest_name
         ]
 
         file_list.sort()
@@ -4859,7 +4951,9 @@ class ToolsGPGSignManifestView(View):
 
         if shutil.which("sha256sum"):
             result = run(
-                ["sha256sum", *file_list],
+                # "--" ends option parsing so SD-sourced filenames can never be
+                # parsed as sha256sum options (see _list_sd_files)
+                ["sha256sum", "--", *file_list],
                 cwd=file_list_path,
                 capture_output=True,
                 text=True,
@@ -5102,15 +5196,7 @@ class ToolsGPGImportPubkeyFileView(View):
 
         file_list_path = resolve_microsd_images_dir()
 
-        verify_file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-            )
-        ]
+        verify_file_list = _list_sd_files(file_list_path)
 
         verify_file_buttons = [ButtonOption(file) for file in verify_file_list]
 
@@ -5384,15 +5470,7 @@ class ToolsGPGLoadPrivkeyFileView(View):
 
         file_list_path = resolve_microsd_images_dir()
 
-        file_list = [
-            f
-            for f in os.listdir(file_list_path)
-            if (
-                not f.startswith('.')
-                and f != '__MACOSX'
-                and os.path.isfile(os.path.join(file_list_path, f))
-            )
-        ]
+        file_list = _list_sd_files(file_list_path)
 
         buttons = [ButtonOption(file) for file in file_list]
 
@@ -5630,20 +5708,33 @@ def bip85_rsa_from_root(
     return RSA.generate(bits, randfunc=drng.read)
 
 
-def bip85_ed25519_from_root(
-    root, index: int, sub_index: int | None = None, alg: str = "EdDSA", version=None
-):
+def bip85_ed25519_seed_from_root(
+    root, index: int, sub_index: int | None = None, version=None
+) -> bytes:
+    """The raw 32-byte Ed25519 seed for a BIP85 index.
+
+    Factored out of ``bip85_ed25519_from_root`` so consumers that want the key
+    itself rather than an OpenPGP packet -- the Luckfox rootfs signer, which
+    needs a minisign keypair -- derive it down the exact same path. Two callers
+    computing the same path separately is how they drift apart.
+    """
     from embit import bip85
-    from seedsigner.helpers.ec_point import ed25519_pub_from_seed, curve25519_pub_from_seed
-    from pgpy.constants import EllipticCurveOID
-    from pgpy.packet import fields
 
     app, kt = _resolve_bip85_app_and_keytype(BIP85_GPG_KEY_TYPE_CURVE25519, version)
     path = ([kt] if kt is not None else []) + [256, index]
     if sub_index is not None:
         path.append(sub_index)
-    entropy = bip85.derive_entropy(root, app, path)
-    d_bytes = entropy[:32]
+    return bip85.derive_entropy(root, app, path)[:32]
+
+
+def bip85_ed25519_from_root(
+    root, index: int, sub_index: int | None = None, alg: str = "EdDSA", version=None
+):
+    from seedsigner.helpers.ec_point import ed25519_pub_from_seed, curve25519_pub_from_seed
+    from pgpy.constants import EllipticCurveOID
+    from pgpy.packet import fields
+
+    d_bytes = bip85_ed25519_seed_from_root(root, index, sub_index, version)
     if alg == "EdDSA":
         priv = fields.EdDSAPriv()
         priv.oid = EllipticCurveOID.Ed25519

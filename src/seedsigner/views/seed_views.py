@@ -225,6 +225,11 @@ class SeedSelectSeedView(View):
             connector = seedkeeper_utils.init_satochip(self, init_card_filter=["satochip"])
             if not connector:
                 return Destination(BackStackView)
+
+            # A card with 2FA enabled cannot sign from SeedSigner (no phone-app code flow).
+            if seedkeeper_utils.satochip_2fa_blocks_signing(self, connector):
+                return Destination(BackStackView)
+
             self.controller.sign_message_with_satochip = True
             self.controller.sign_message_data["seed"] = None
             return Destination(SeedSignMessageConfirmMessageView)
@@ -1627,9 +1632,16 @@ class SeedDiscardView(View):
 
     def __init__(self, seed: Seed = None):
         super().__init__()
-        self.seed = seed
-        if self.seed is None:
+        # `seed=None` is the caller's way of saying "the seed I mean is the pending
+        # one that hasn't been stored yet". Resolve it for display, but remember
+        # which kind it was: a pending seed is not in storage.seeds, so discarding
+        # it means clear_pending_seed(), not discard_seed().
+        if seed is None:
+            self.is_pending_seed = True
             self.seed = self.controller.storage.pending_seed
+        else:
+            self.is_pending_seed = False
+            self.seed = seed
 
 
     def run(self):
@@ -1649,16 +1661,16 @@ class SeedDiscardView(View):
 
         if button_data[selected_menu_num] == self.KEEP:
             # Use skip_current_view=True to prevent BACK from landing on this warning screen
-            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
-                return Destination(SeedOptionsView, view_args={"seed": self.seed}, skip_current_view=True)
-            else:
+            if self.is_pending_seed:
                 return Destination(SeedFinalizeView, skip_current_view=True)
+            else:
+                return Destination(SeedOptionsView, view_args={"seed": self.seed}, skip_current_view=True)
 
         elif button_data[selected_menu_num] == self.DISCARD:
-            if any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds):
-                self.controller.discard_seed(self.seed)
-            else:
+            if self.is_pending_seed:
                 self.controller.storage.clear_pending_seed()
+            else:
+                self.controller.discard_seed(self.seed)
             return Destination(MainMenuView, clear_history=True)
 
 
@@ -2707,9 +2719,17 @@ class SeedWordsView(View):
 
     def __init__(self, seed: Seed, bip85_data: dict = None, page_index: int = 0, share_index: int | None = None):
         super().__init__()
-        self.seed = seed
-        if self.seed is None:
+        # `seed=None` means "the pending seed, not yet in storage" -- the new-seed
+        # flows (dice/camera entropy, SLIP-39 generate) hand that sentinel down the
+        # whole View chain so the last step knows to call finalize_pending_seed().
+        # Resolve it to display the words, but remember that it was pending and put
+        # the sentinel back before routing onward (see run()).
+        if seed is None:
+            self.is_pending_seed = True
             self.seed = self.controller.storage.get_pending_seed()
+        else:
+            self.is_pending_seed = False
+            self.seed = seed
         self.bip85_data = bip85_data
         self.page_index = page_index
         self.share_index = share_index
@@ -2744,8 +2764,7 @@ class SeedWordsView(View):
 
         button_data = []
         num_pages = int(len(mnemonic)/words_per_page)
-        is_finalized = any(self.seed is stored_seed for stored_seed in self.controller.storage.seeds)
-        if self.page_index < num_pages - 1 or not is_finalized:
+        if self.page_index < num_pages - 1 or self.is_pending_seed:
             button_data.append(self.NEXT)
         else:
             button_data.append(self.DONE)
@@ -2762,8 +2781,12 @@ class SeedWordsView(View):
         if selected_menu_num == RET_CODE__BACK_BUTTON:
             return Destination(BackStackView)
 
+        if self.is_pending_seed:
+            # Restore the sentinel so the next View still knows this seed is pending
+            self.seed = None
+
         if button_data[selected_menu_num] == self.NEXT:
-            if not is_finalized and self.page_index == num_pages - 1:
+            if self.is_pending_seed and self.page_index == num_pages - 1:
                 return Destination(
                     SeedWordsBackupTestPromptView,
                     view_args=dict(seed=self.seed, bip85_data=self.bip85_data, share_index=self.share_index),
@@ -2952,9 +2975,15 @@ class SeedWordsBackupTestView(View):
         consistent screenshot results).
         """
         super().__init__()
-        self.seed = seed
-        if self.seed is None:
+        # See SeedWordsView.__init__(): `seed=None` is the "still pending" sentinel
+        # and has to survive this View, or the backup test's exit routes the user to
+        # SeedOptionsView instead of SeedFinalizeView and the seed is never stored.
+        if seed is None:
+            self.is_pending_seed = True
             self.seed = self.controller.storage.get_pending_seed()
+        else:
+            self.is_pending_seed = False
+            self.seed = seed
         self.bip85_data = bip85_data
         self.share_index = share_index
 
@@ -3006,6 +3035,10 @@ class SeedWordsBackupTestView(View):
             is_button_text_centered=True,
         )
 
+        if self.is_pending_seed:
+            # Restore the sentinel so the next View still knows this seed is pending
+            self.seed = None
+
         if button_data[selected_menu_num] == real_word:
             self.confirmed_list.append(self.cur_index)
             if len(self.confirmed_list) == len(self.mnemonic_list):
@@ -3018,7 +3051,7 @@ class SeedWordsBackupTestView(View):
                 # Continue testing the remaining words
                 return Destination(
                     SeedWordsBackupTestView,
-                    view_args=dict(seed=self.seed, confirmed_list=self.confirmed_list, bip85_data=self.bip85_data, share_index=self.share_index),
+                    view_args=dict(seed=self.seed, confirmed_list=list(self.confirmed_list), bip85_data=self.bip85_data, share_index=self.share_index),
                 )
 
         else:
@@ -3030,7 +3063,7 @@ class SeedWordsBackupTestView(View):
                         bip85_data=self.bip85_data,
                         cur_index=self.cur_index,
                         wrong_word=button_data[selected_menu_num].button_label,
-                        confirmed_list=self.confirmed_list,
+                        confirmed_list=list(self.confirmed_list),
                         share_index=self.share_index,
                     )
                 )
@@ -4797,9 +4830,17 @@ class MultisigWalletDescriptorView(View):
             return Destination(BackStackView)
 
         elif button_data[selected_menu_num] == self.RETURN:
+            self.controller.resume_main_flow = None
+            psbt_parser = self.controller.psbt_parser
+            if psbt_parser and psbt_parser.unidentified_change_outputs:
+                # The descriptor decides which outputs are change, so the psbt has to be
+                # read again with it; the review restarts from the overview.
+                from seedsigner.views.psbt_views import PSBTOverviewView
+                self.controller.psbt_parser = None
+                return Destination(PSBTOverviewView, skip_current_view=True)
+
             # Jump straight back to PSBT change verification
             from seedsigner.views.psbt_views import PSBTChangeDetailsView
-            self.controller.resume_main_flow = None
             return Destination(PSBTChangeDetailsView, view_args=dict(change_address_num=0))
 
         elif button_data[selected_menu_num].button_label.startswith(_(self.VERIFY_ADDR.button_label)):

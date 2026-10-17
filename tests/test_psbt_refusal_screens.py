@@ -6,6 +6,12 @@ renders past the bottom edge, straight over the button. So an overlong refusal
 reason produces a visually broken screen that nothing else catches. These tests
 measure the real layout and fail if a message no longer fits.
 """
+# Before any seedsigner import: base installs the test doubles for the renderer
+# and the hardware buttons. Importing the GUI first bound the real ones for every
+# module collected after this file, so the flow tests that followed it hung -- on
+# an unconfigured Renderer, or on real buttons waiting for a key press.
+import base  # noqa: F401
+
 import threading
 
 from unittest.mock import patch
@@ -16,7 +22,7 @@ from PIL import Image, ImageDraw
 
 from seedsigner.gui.screens.screen import ButtonOption, WarningScreen
 from seedsigner.models.psbt_parser import MAX_MONEY, PSBTParser
-from seedsigner.views.psbt_views import PSBTOverviewView
+from seedsigner.views.psbt_views import REJECT_PRESENTATION, RejectPresentation
 
 from psbt_suite_util import REJECT_PARSER_VECTORS, suite_seed, SUITE_NETWORK, load_psbt
 
@@ -70,13 +76,13 @@ def stub_renderer():
         yield
 
 
-def measure(text: str) -> tuple[int, int, int]:
-    """Returns (box_height, line_count, text_height) for a WarningScreen body."""
-    screen = WarningScreen(
+def measure(text: str, screen_cls=None, headline=None, button_label="Done") -> tuple[int, int, int]:
+    """Returns (box_height, line_count, text_height) for a refusal screen body."""
+    screen = (screen_cls or WarningScreen)(
         title="Invalid PSBT",
-        status_headline=None,
+        status_headline=headline,
         text=text,
-        button_data=[ButtonOption("Done")],
+        button_data=[ButtonOption(button_label)],
         show_back_button=False,
     )
     text_area = [c for c in screen.components if c.__class__.__name__ == "TextArea"][-1]
@@ -85,8 +91,8 @@ def measure(text: str) -> tuple[int, int, int]:
     return text_area.height, lines, height
 
 
-def assert_fits(text: str, label: str):
-    box, lines, height = measure(text)
+def assert_fits(text: str, label: str, screen_cls=None, headline=None, button_label="Done"):
+    box, lines, height = measure(text, screen_cls, headline, button_label)
     assert height <= box, (
         f"{label}: {lines} lines, {height}px in a {box}px box — this renders over "
         f"the button. Shorten it.\n  {text!r}"
@@ -104,11 +110,15 @@ class TestRefusalScreensFit:
         with pytest.raises(InvalidPSBTError) as excinfo:
             PSBTParser(p=load_psbt(vector.name), seed=suite_seed(), network=SUITE_NETWORK)
 
+        presentation = REJECT_PRESENTATION.get(excinfo.value.code, RejectPresentation())
+        if presentation.text is not None:
+            pytest.skip(f"{excinfo.value.code} renders fixed prose; see test_table_prose_fits")
+
         text = str(excinfo.value)
-        tip = PSBTOverviewView.REJECT_TIPS.get(excinfo.value.code)
-        if tip:
-            text += "\n" + tip
-        assert_fits(text, vector.name)
+        if presentation.tip:
+            text += "\n" + presentation.tip
+        assert_fits(text, vector.name, presentation.screen,
+                    presentation.headline, presentation.button_label)
 
     def test_worst_case_values_fit(self):
         """
@@ -126,6 +136,31 @@ class TestRefusalScreensFit:
         }
         for label, text in cases.items():
             assert_fits(text, label)
+
+    def test_table_prose_fits(self):
+        """
+        The entries that render fixed prose instead of the parser's message. These never
+        reach test_real_refusal_message_fits, and they use the dire and info screens,
+        whose headline and icon eat into the same 240x240 budget.
+        """
+        for code, presentation in REJECT_PRESENTATION.items():
+            if presentation.text is None:
+                continue
+            assert_fits(presentation.text, code, presentation.screen,
+                        presentation.headline, presentation.button_label)
+
+
+    def test_every_reject_code_has_a_reachable_destination(self):
+        """
+        A typo in destination_name would only surface when a user hit that refusal on
+        the device, so resolve every one of them here.
+        """
+        from seedsigner.views import psbt_views
+
+        for code, presentation in REJECT_PRESENTATION.items():
+            assert hasattr(psbt_views, presentation.destination_name), (
+                f"{code}: no View named {presentation.destination_name}")
+
 
     def test_gap_limit_tip_survives_a_verbose_translation(self):
         """
@@ -264,3 +299,23 @@ class TestBlockAnchor:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["height"] > 900_000
         assert data["timestamp"] > 1_700_000_000
+
+
+class TestIdentifyChangeScreenFits:
+    """PSBTIdentifyChangeView's text shares the warning box with a headline and two buttons."""
+
+    @pytest.mark.parametrize("text,buttons", [
+        ("Load descriptor to identify change.", ["Load descriptor", "Continue as payment"]),
+        ("The loaded descriptor doesn't identify it. Shown as a payment.", ["Continue"]),
+    ])
+    def test_text_fits(self, text, buttons):
+        screen = WarningScreen(
+            status_headline="Change Not Identified",
+            text=text,
+            button_data=[ButtonOption(b) for b in buttons],
+            show_back_button=True,
+        )
+        text_area = [c for c in screen.components if c.__class__.__name__ == "TextArea"][-1]
+        lines = len(text_area.text_lines)
+        height = text_area.text_height_above_baseline * lines + text_area.line_spacing * (lines - 1)
+        assert height <= text_area.height, f"{lines} lines, {height}px in a {text_area.height}px box"

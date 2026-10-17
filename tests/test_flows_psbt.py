@@ -1,10 +1,17 @@
-from base import BaseTest, FlowTest, FlowStep
-
+from binascii import a2b_base64
 from unittest.mock import Mock
+
+from embit import bip32, script
+from embit.psbt import PSBT, DerivationPath
+
+from base import BaseTest, FlowTest, FlowStep
+from psbt_testing_util import (PSBTTestData, claim_seed_owns_key, create_output,
+    foreign_public_key, root_for_seed)
 
 from seedsigner.controller import Controller
 from seedsigner.views.view import MainMenuView
 from seedsigner.views import scan_views, seed_views, psbt_views
+from seedsigner.models.seed import Seed
 from seedsigner.models.settings import SettingsConstants
 
 
@@ -321,6 +328,125 @@ class TestPSBTSatochip(FlowTest):
         assert controller.psbt_parser is None
         assert controller.psbt_sign_with_satochip is False
 
+    def test_satochip_2fa_enabled_blocks_signing(self, monkeypatch):
+        """A card with 2FA enabled should warn and return to selection without signing."""
+        from seedsigner.helpers import seedkeeper_utils
+
+        def load_psbt_into_decoder(view: scan_views.ScanView):
+            view.decoder.add_data(
+                "cHNidP8BAHECAAAAAX9/d6VyI7nvVTyhLBfqu05za2AJ2Z0dKMC0cUX+S2U7AQAAAAD9////AgeHAAAAAAAAFgAUOnNPuZMD1sQudt3+7LvHBUvGhyd//gAAAAAAABYAFGO9QLvu4V9/hz6ZjbIGMrqsEiIYAjQTAAABAR+ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAQDBAQAAAAABAYeHL9UQlz/jEKUuNNY3LTeQRjudjBinsP2L0ppvgRt0AAAAAAD/////AnbP3rsPAAAAIlEgtgmCioGjfKwp6f8rOoI4OPb+ZV8db581J9IizZPskl2ghgEAAAAAABYAFKawrgcT62jmIVQwyHPCV0thmJWbAUDCBlMh9VjZN2NdU9Wabi0o3Ct1q9YHTsJRLAkLfUuIHB+BE+ucR4bdGAJG5nBhCWOmCXbpRwKP1INRYvkuQ2fHAAAAACIGA2+PEYHyVy6nhYwAx5SJKBIWXjsWgjhhf/2FEWqXgxnoEKNOC3gAAACAAAAAAAAAAAAAACICA0SBeeHxfHdny6rUnQJuteAnQ7shSydexjJCkSJarn3mEKNOC3gAAACAAQAAAAEAAAAA"
+            )
+
+        class MockConnector:
+            needs_2FA = True
+
+        monkeypatch.setattr(seedkeeper_utils, "init_satochip", lambda *args, **kwargs: MockConnector())
+
+        controller = Controller.get_instance()
+        controller.storage.seeds = []
+        controller.psbt_parser = None
+        controller.psbt_sign_with_satochip = False
+        controller.Satochip_Connector = None
+
+        self.run_sequence([
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),
+            # No seeds loaded -> index 0 is the SATOCHIP option. screen_return_value (not
+            # button_data_selection) because the View shows a second, non-button Screen
+            # (the 2FA warning) during this step.
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTSelectSeedView),
+        ])
+
+        assert controller.psbt_parser is None
+        assert controller.psbt_sign_with_satochip is False
+
+    def test_multisig_card_parser_uses_configured_network(self, monkeypatch):
+        """
+        A multisig PSBT signed with a smartcard (Satochip or Keycard) must be parsed
+        with the configured network rather than the parser's mainnet default. On a
+        non-mainnet network the wrong HRP silently rewrites every address shown on
+        screen (e.g. tb1q... -> bc1q...), so the parser's network and the rendered
+        destination address are both asserted here.
+        """
+        import base64
+
+        from seedsigner.views import scan_views, psbt_views
+        from seedsigner.views.view import MainMenuView
+        from seedsigner.helpers import seedkeeper_utils
+
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.MULTISIG_NATIVE_SEGWIT_1_INPUT))
+        psbt.outputs.append(create_output(PSBTTestData.MULTISIG_NATIVE_SEGWIT_RECEIVE))
+        psbt_b64 = base64.b64encode(psbt.serialize()).decode()
+
+        def load_psbt_into_decoder(view: scan_views.ScanView):
+            view.decoder.add_data(psbt_b64)
+
+        class MockCard:
+            needs_2FA = False
+
+        monkeypatch.setattr(seedkeeper_utils, "init_satochip", lambda *args, **kwargs: MockCard())
+
+        controller = Controller.get_instance()
+        controller.storage.seeds = []
+        controller.psbt_parser = None
+        controller.psbt_sign_with_satochip = False
+
+        # Network on testnet -> addresses must render as tb1...
+        self.settings.set_value(SettingsConstants.SETTING__NETWORK, SettingsConstants.TESTNET)
+        self.settings.set_value(
+            SettingsConstants.SETTING__SATOCHIP_SUPPORT,
+            SettingsConstants.OPTION__ENABLED,
+        )
+
+        self.run_sequence([
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+            FlowStep(scan_views.ScanView, before_run=load_psbt_into_decoder),
+            FlowStep(psbt_views.PSBTSelectSeedView, button_data_selection=psbt_views.PSBTSelectSeedView.SATOCHIP),
+        ])
+
+        parser = controller.psbt_parser
+        assert parser is not None
+        assert parser.network == SettingsConstants.TESTNET
+        assert parser.is_multisig
+        assert parser.destination_addresses and parser.destination_addresses[0].startswith("tb1")
+
+
+class TestCardMultisigChange(BaseTest):
+    """
+    The Satochip/Keycard multisig flow parses with no seed, so only a loaded
+    descriptor can identify change -- and loading one must re-read the psbt.
+    """
+
+    def setup_method(self):
+        super().setup_method()
+        from psbt_suite_util import load_psbt
+        self.controller.psbt = load_psbt("TX-21.ms_honest_change_no_xpubs")
+        self.controller.psbt_seed = None
+        self.controller.psbt_sign_with_satochip = True
+        self.settings.set_value(SettingsConstants.SETTING__NETWORK, SettingsConstants.MAINNET)
+
+    def test_change_is_unidentified_without_a_descriptor(self):
+        parser = psbt_views.seedless_multisig_parser(self.controller, self.settings)
+        assert parser.num_change_outputs == 0
+        assert parser.unidentified_change_outputs == [0]
+
+    def test_overview_re_reads_the_psbt_with_the_loaded_descriptor(self):
+        """MultisigWalletDescriptorView drops the parser; the overview must rebuild it seedless."""
+        from embit.descriptor import Descriptor
+        from psbt_suite_util import MULTISIG_DESCRIPTOR
+
+        self.controller.multisig_wallet_descriptor = Descriptor.from_string(MULTISIG_DESCRIPTOR)
+        self.controller.psbt_parser = None
+
+        psbt_views.PSBTOverviewView()
+
+        parser = self.controller.psbt_parser
+        assert parser is not None
+        assert parser.num_change_outputs == 1
+        assert parser.unidentified_change_outputs == []
+
+
 
 class TestPSBTMultisigDescriptorMismatch(BaseTest):
 
@@ -334,8 +460,15 @@ class TestPSBTMultisigDescriptorMismatch(BaseTest):
         psbt_b64 = "cHNidP8BAIkCAAAAAc9dCSh2RcRPfHaT5bNVBpbg0jAekRLqOK+bpN/QA0jeAAAAAAD9////AtAHAAAAAAAAIlEg24shYsV3IRCzlgmMKjAsR4Ad9tX896z7zDAi5q0TU9H3CgAAAAAAACIAIByGQg/VP2aRID62ty40E64HYZeRRsKRGLt8J/76R6stQ04FAE8BBDWHzwSLLGdzgAAAAq3q6nR20JnHR+vKrBQdWxN9C7xU8zNX942mVF7AQpl2ArrdLwVlkGxaatQJ4wwkvypNBKbwOq9hXGLNlKi7rZWAFDUxzXUwAACAAQAAgAAAAIACAACATwEENYfPBHOCZmWAAAACmH6KTXIny0vueRgQFBq4M6oMuG8f1QM0I/RzKQ03bCgCHrF0fyUtV0+FD2N34u/woqb8MAt/o+7Ed58RddhY8zYUCUjSaDAAAIABAACAAAAAgAIAAIAAAQEriBMAAAAAAAAiACBY4WsjDgJXLj3VW222jU1tkIIhT26ce/2efH73BWGGBiICAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5RzBEAiAPkQTY84YjFFkpD6MI2cc5rJySqws5fsTQA/8XEZFpbAIgTNVykbEH4Z7bqyzhhy6lty0K8rtCUDCaHNv+47NNIWgBAQMEAQAAAAEFR1IhApL4XO+VE1pPYn5wnRFyJQKVSc9TX2dO6KIBH6jwvgPaIQKsn5K3VDuutkAa3byXEjmTBcZ4g+zNWsJvVNCm+VwpuVKuIgYCkvhc75UTWk9ifnCdEXIlApVJz1NfZ07oogEfqPC+A9ocNTHNdTAAAIABAACAAAAAgAIAAIAAAAAAAAAAACIGAqyfkrdUO662QBrdvJcSOZMFxniD7M1awm9U0Kb5XCm5HAlI0mgwAACAAQAAgAAAAIACAACAAAAAAAAAAAAAAAEBR1IhApYXaczuYbBM/A+EH639Ir2yIB4PxL46dK/I1V1O9aHgIQLa02HCI/+EP+9gGpxHskjYWFN5hZzXY7RRvwV4UF42ylKuIgIClhdpzO5hsEz8D4Qfrf0ivbIgHg/Evjp0r8jVXU71oeAcNTHNdTAAAIABAACAAAAAgAIAAIABAAAAAAAAACICAtrTYcIj/4Q/72AanEeySNhYU3mFnNdjtFG/BXhQXjbKHAlI0mgwAACAAQAAgAAAAIACAACAAQAAAAAAAAAA"
 
         psbt_obj = psbt.PSBT.from_string(psbt_b64)
-        parser = PSBTParser(psbt_obj)
+        # Seedless (the card multisig flow), so only a descriptor can make the output
+        # change: parse with the wallet's real one, then have the user swap in another.
+        wallet_descriptor = Descriptor.from_string(
+            "wsh(sortedmulti(2,[3531cd75/48h/1h/0h/2h]tpubDEvs8aQCFkexBPVGJoqctrxgK9zeFwejWUWsAn7fKeSbbSUQ8sW6BJHrkKpNGRXwAfk7UWZDKz6amomvE2bo7DzokRtH8gnfweyQZf2ufFz/<0;1>/*,"
+            "[0948d268/48h/1h/0h/2h]tpubDEkn1ih27ZcgHeu4tLzDw5EceCBa8hYMhRoCP7QmfijsrxDgchvMEC8ukFncE9Y7qBCBozBzYjEz4ophQ2quGRZsbN2bTziJxpLeK7mHq4L/<0;1>/*))"
+        )
+        parser = PSBTParser(psbt_obj, multisig_descriptor=wallet_descriptor)
         parser.parse()
+        assert parser.num_change_outputs == 1
 
         self.controller.psbt = psbt_obj
         self.controller.psbt_parser = parser
@@ -373,3 +506,181 @@ class TestPSBTMultisigDescriptorMismatch(BaseTest):
         assert follow_up_kwargs["button_data"][0] is follow_up_view.VERIFY_MULTISIG
         assert follow_up_kwargs["button_data"][1] is follow_up_view.SKIP_VERIFICATION
         assert follow_up_destination.View_cls.__name__ == "BackStackView"
+
+
+
+class TestPSBTOwnershipClaimRouting(FlowTest):
+    """
+    A psbt carrying an ownership claim that does not hold up is rejected while it is being
+    parsed, before the user is shown anything about the transaction. These cover the
+    routing that turns that rejection into a warning screen instead of a crash.
+    """
+
+    def _load_psbt_for_signing(self, psbt: PSBT, seed: Seed = None):
+        """
+        Stage the psbt in the Controller and load the signing seed into storage, as if
+        both had just been scanned. Each test's sequence then starts at seed selection;
+        the parse itself runs when PSBTOverviewView is instantiated.
+        """
+        self.settings.set_value(SettingsConstants.SETTING__NETWORK, SettingsConstants.REGTEST)
+        self.controller.psbt = psbt
+        self.controller.storage.set_pending_seed(seed if seed is not None else PSBTTestData.seed)
+        self.controller.storage.finalize_pending_seed()
+
+
+    def _psbt_with_change(self):
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_1_INPUT))
+        psbt.outputs.append(create_output(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_CHANGE, 10_000))
+        return psbt
+
+
+    def test_forged_output_claim_terminates_signing_flow(self):
+        """
+        A forged ownership claim on an output is framed as a potential attack, so it
+        routes to a warning that aborts the signing flow.
+        """
+        psbt = self._psbt_with_change()
+        claim_seed_owns_key(psbt.outputs[0], "m/84h/1h/0h/1/0", foreign_public_key())
+        self._load_psbt_for_signing(psbt)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            FlowStep(psbt_views.PSBTOutputOwnershipClaimFailedView, button_data_selection=psbt_views.PSBTOutputOwnershipClaimFailedView.DISCARD),
+            FlowStep(MainMenuView),
+        ])
+
+
+    def test_forged_input_claim_terminates_signing_flow(self):
+        """
+        A false claim on an input is framed as inconsistent data rather than as an attack,
+        but also routes to its own information screen that aborts the signing flow.
+        """
+        psbt = self._psbt_with_change()
+        claim_seed_owns_key(psbt.inputs[0], "m/84h/1h/0h/0/0", foreign_public_key())
+        self._load_psbt_for_signing(psbt)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            FlowStep(psbt_views.PSBTInputOwnershipClaimFailedView, button_data_selection=psbt_views.PSBTInputOwnershipClaimFailedView.DISCARD),
+            FlowStep(MainMenuView),
+        ])
+
+
+    def test_surplus_derivation_paths_terminate_signing_flow(self):
+        """
+        When an output names more derivation paths than its script can use, nothing in
+        the psbt says which key it actually pays, so parsing refuses it.
+
+        The parser tests cover why that shape is refusable. This one covers what the user
+        gets: a warning that ends the flow, rather than a crash, and without first being
+        walked through the details of a transaction about to be discarded.
+        """
+        other_root = root_for_seed(PSBTTestData.recipient_seed)
+
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
+
+        # Output 2 pays a stranger and carries no derivation path entries of its own.
+        # Give it two, so nothing in the psbt says which key it pays.
+        for i in range(2):
+            derivation_path = bip32.parse_path(f"m/84h/1h/0h/0/{i}")
+            psbt.outputs[2].bip32_derivations[other_root.derive(derivation_path).get_public_key()] = \
+                DerivationPath(other_root.my_fingerprint, derivation_path)
+
+        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            FlowStep(psbt_views.PSBTRefusalView, button_data_selection=0),
+            FlowStep(MainMenuView),
+        ])
+
+
+    def test_output_ownership_contradiction_terminates_signing_flow(self):
+        """
+        When a psbt marks an output as paying us while its script pays a stranger, the
+        two cannot both be true, so parsing refuses it.
+
+        The parser tests cover which shapes qualify. This one covers what the user gets:
+        a warning that ends the flow, before any transaction detail is rendered.
+        """
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
+
+        # Output 0 is the wallet's own change. Repoint its script at a stranger but leave
+        # its derivation path entry in place, so the psbt still names a key this seed
+        # owns on an output that no longer pays it. Note that psbt.tx is rebuilt on every
+        # access, so the scriptPubKey has to be set on the output scope itself.
+        psbt.outputs[0].script_pubkey = script.p2wpkh(foreign_public_key())
+
+        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            # The fork folds the contradiction case into FORGED_OUTPUT_OWNERSHIP, whose
+            # refusal view is PSBTOutputOwnershipClaimFailedView.
+            FlowStep(psbt_views.PSBTOutputOwnershipClaimFailedView,
+                     button_data_selection=psbt_views.PSBTOutputOwnershipClaimFailedView.DISCARD),
+            FlowStep(MainMenuView),
+        ])
+
+
+    def test_mixed_derivation_path_types_terminate_signing_flow(self):
+        """
+        An input or output filling both derivation path maps at once is refused. The
+        check lives in the ownership scan, which runs over inputs as well as outputs, so
+        this one plants the shape on an input, the side the parser tests do not cover.
+
+        The fork refuses the shape when both maps name this seed: a script is one type or
+        the other, so claiming this seed as both an ecdsa and a taproot key is a
+        contradiction. (Upstream refused any scope with both maps populated, even when
+        only one named this seed.) It ends the flow at its own warning before any
+        transaction detail is rendered.
+        """
+        root = root_for_seed(PSBTTestData.two_input_seed)
+
+        psbt = PSBT.parse(a2b_base64(PSBTTestData.SINGLE_SIG_NATIVE_SEGWIT_2_INPUTS))
+
+        # Input 0 already carries a segwit-v0 entry naming this seed. Add a taproot entry
+        # beside it that also names this seed, so the two claims contradict each other.
+        taproot_path = "m/86h/1h/0h/0/0"
+        claim_seed_owns_key(
+            psbt.inputs[0], taproot_path,
+            root.derive(taproot_path).get_public_key(),
+            seed=PSBTTestData.two_input_seed,
+            is_taproot=True, leaf_hashes=[],
+        )
+
+        self._load_psbt_for_signing(psbt, seed=PSBTTestData.two_input_seed)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            FlowStep(psbt_views.PSBTRefusalView, button_data_selection=0),
+            FlowStep(MainMenuView),
+        ])
+
+
+    def test_wrong_seed_routes_back_to_seed_selection_flow(self):
+        """
+        The wrong seed for a psbt redirects before any transaction detail is rendered and
+        routes back to seed selection with the signing seed cleared so another can be
+        picked.
+        """
+        self._load_psbt_for_signing(self._psbt_with_change(), seed=PSBTTestData.recipient_seed)
+
+        self.run_sequence([
+            FlowStep(psbt_views.PSBTSelectSeedView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+            FlowStep(psbt_views.PSBTSeedCannotSignView, button_data_selection=psbt_views.PSBTSeedCannotSignView.SELECT_DIFFERENT_SEED),
+            FlowStep(psbt_views.PSBTSelectSeedView),
+        ])
+
+        assert self.controller.psbt_seed is None
+        assert self.controller.psbt_parser is None
+
+        # The psbt itself is kept: the user is choosing a different seed for it, not
+        # starting over
+        assert self.controller.psbt is not None

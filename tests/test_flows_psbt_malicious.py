@@ -84,7 +84,10 @@ class TestMaliciousPSBTFlows(FlowTest):
         """
         self.run_sequence(
             self.scan_and_select_seed("XTRAS.MIXED_INPUT_TYPES") + [
-                FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+                # The refusal redirects out of the overview before any transaction
+                # detail is rendered; PSBTRefusalView draws the screen.
+                FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+                FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
                 FlowStep(MainMenuView),
             ]
         )
@@ -99,7 +102,10 @@ class TestMaliciousPSBTFlows(FlowTest):
         """
         self.run_sequence(
             self.scan_and_select_seed("TX-08.SINGLE") + [
-                FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+                # The refusal redirects out of the overview before any transaction
+                # detail is rendered; PSBTRefusalView draws the screen.
+                FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+                FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
                 FlowStep(MainMenuView),
             ]
         )
@@ -116,14 +122,17 @@ class TestMaliciousPSBTFlows(FlowTest):
         """
         self.run_sequence(
             self.scan_and_select_seed("TX-01") + [
-                FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+                # The refusal redirects out of the overview before any transaction
+                # detail is rendered; PSBTRefusalView draws the screen.
+                FlowStep(psbt_views.PSBTOverviewView, is_redirect=True),
+                FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
                 FlowStep(MainMenuView),
             ]
         )
 
     def test_unparseable_psbt_is_rejected_at_scan(self):
         """
-        TX-16.foreign_fingerprint carries a pubkey embit cannot parse. Delivered
+        TX-04 carries a pubkey embit cannot parse. Delivered
         as UR2 (how a real scan arrives), `DecodeQR.is_psbt` is True but
         `get_psbt()` returns None. ScanView must refuse it there, rather than
         routing on with `controller.psbt = None` — which PSBTSelectSeedView
@@ -133,6 +142,135 @@ class TestMaliciousPSBTFlows(FlowTest):
         self.run_sequence([
             FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
             FlowStep(scan_views.ScanView,
-                     before_run=self.load_psbt_as_ur2("TX-16.foreign_fingerprint")),
+                     before_run=self.load_psbt_as_ur2("TX-04")),
             FlowStep(MainMenuView),
+        ])
+
+
+    def test_version_confused_psbt_is_refused_at_scan(self):
+        """
+        ENC-03 hides an attacker's output behind v2 output fields in a v0 psbt.
+        embit would take it for our change, so it is refused on the raw bytes, at
+        scan, before a seed is even chosen -- with the refusal screen, not the
+        generic "could not be read" one.
+        """
+        def assert_cleared(view):
+            assert view.controller.psbt is None
+
+        self.run_sequence([
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+            FlowStep(scan_views.ScanView, before_run=self.load_psbt("ENC-03.v2_keys_hide_change")),
+            FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
+            FlowStep(MainMenuView, before_run=assert_cleared),
+        ])
+
+    def test_framing_refusal_embit_cannot_parse_is_explained(self):
+        """
+        ENC-05 (a v2 psbt that also carries a global unsigned tx) is one embit
+        refuses too. Delivered as UR2 it still gets the refusal screen that names
+        the problem, rather than the generic "Invalid PSBT" one.
+        """
+        self.run_sequence([
+            FlowStep(MainMenuView, button_data_selection=MainMenuView.SCAN),
+            FlowStep(scan_views.ScanView, before_run=self.load_psbt_as_ur2("ENC-05.v0_tx_in_v2")),
+            FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
+            FlowStep(MainMenuView),
+        ])
+
+    def test_version_confused_psbt_is_refused_from_microsd(self, tmp_path):
+        """
+        The microSD loader applies the same framing checks as a scan. ENC-09's
+        forged previous tx would otherwise pass the txid check against its own
+        injected txid and show a 1,000-sat fee for an 800,000-sat one.
+        """
+        from unittest.mock import patch
+        from seedsigner.hardware.microsd import MicroSD
+        from seedsigner.views import smartcard_views
+
+        (tmp_path / "psbt").mkdir()
+        (tmp_path / "psbt" / "tx.psbt").write_bytes(load_bytes("ENC-09.v2_prevtxid_in_v0"))
+        # No stored seeds, so the loader skips its "may expose loaded secrets" warning.
+        self.controller.storage.seeds = []
+
+        with patch.object(MicroSD, "get_microsd_dir", staticmethod(lambda: tmp_path)):
+            self.run_sequence([
+                FlowStep(smartcard_views.ToolsSatochipLoadPsbtView, screen_return_value=0),
+                FlowStep(psbt_views.PSBTRefusalView, screen_return_value=0),
+                FlowStep(MainMenuView),
+            ])
+        assert self.controller.psbt is None
+
+    def test_unidentified_multisig_change_is_a_payment_until_identified(self):
+        """
+        With no global xpubs, genuine multisig change looks exactly like a different
+        wallet that shares our key (TX-21.ms_foreign_quorum_no_xpubs). Without the
+        descriptor it is shown as a payment, and the user is told a descriptor would
+        identify it. Continuing without one reviews it as the full spend it appears to be.
+        """
+        def assert_unidentified(view):
+            assert view.controller.psbt_parser.unidentified_change_outputs == [0]
+            assert view.controller.psbt_parser.num_change_outputs == 0
+
+        self.run_sequence(
+            self.scan_and_select_seed("TX-21.ms_honest_change_no_xpubs") + [
+                FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+                FlowStep(psbt_views.PSBTIdentifyChangeView, before_run=assert_unidentified,
+                         button_data_selection=psbt_views.PSBTIdentifyChangeView.CONTINUE_AS_PAYMENT),
+                FlowStep(psbt_views.PSBTNoChangeWarningView),
+            ]
+        )
+
+    def test_loading_the_descriptor_identifies_the_change(self):
+        """"Load descriptor" goes to the descriptor loader, resuming the psbt flow."""
+        from seedsigner.controller import Controller
+        from seedsigner.views.seed_views import LoadMultisigWalletDescriptorView
+
+        def assert_resumes(view):
+            assert view.controller.resume_main_flow == Controller.FLOW__PSBT
+
+        self.run_sequence(
+            self.scan_and_select_seed("TX-21.ms_honest_change_no_xpubs") + [
+                FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+                FlowStep(psbt_views.PSBTIdentifyChangeView,
+                         button_data_selection=psbt_views.PSBTIdentifyChangeView.LOAD_DESCRIPTOR),
+                FlowStep(LoadMultisigWalletDescriptorView, before_run=assert_resumes),
+            ]
+        )
+
+    def test_returning_with_a_descriptor_re_reads_the_psbt(self):
+        """
+        Once a descriptor is loaded, "Return to transaction" discards the parse that
+        couldn't identify the change and restarts review, now with the change shown as
+        change. (Starts at MultisigWalletDescriptorView, as after a descriptor scan.)
+        """
+        from embit.descriptor import Descriptor
+
+        from seedsigner.controller import Controller
+        from seedsigner.models.psbt_parser import PSBTParser
+        from seedsigner.views.seed_views import MultisigWalletDescriptorView
+
+        from psbt_suite_util import MULTISIG_DESCRIPTOR, SUITE_NETWORK, load_psbt
+
+        seed = self.controller.storage.seeds[0]
+        psbt = load_psbt("TX-21.ms_honest_change_no_xpubs")
+        self.controller.psbt = psbt
+        self.controller.psbt_seed = seed
+        self.controller.psbt_parser = PSBTParser(psbt, seed=seed, network=SUITE_NETWORK)
+        assert self.controller.psbt_parser.unidentified_change_outputs == [0]
+        self.controller.multisig_wallet_descriptor = Descriptor.from_string(MULTISIG_DESCRIPTOR)
+        self.controller.resume_main_flow = Controller.FLOW__PSBT
+        # On a device the descriptor screen is on the back stack when RETURN skips it.
+        from seedsigner.views.view import Destination
+        self.controller.back_stack.append(Destination(MultisigWalletDescriptorView))
+
+        def assert_identified(view):
+            parser = view.controller.psbt_parser
+            assert parser.unidentified_change_outputs == []
+            assert parser.num_change_outputs == 1
+
+        self.run_sequence([
+            FlowStep(MultisigWalletDescriptorView,
+                     button_data_selection=MultisigWalletDescriptorView.RETURN),
+            FlowStep(psbt_views.PSBTOverviewView, screen_return_value=0),
+            FlowStep(psbt_views.PSBTMathView, before_run=assert_identified),
         ])

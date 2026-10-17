@@ -6,8 +6,15 @@ import pytest
 # Mock hardware-dependent modules so unit tests can run without them
 sys.modules.setdefault('RPi', MagicMock())
 sys.modules.setdefault('RPi.GPIO', MagicMock())
-sys.modules.setdefault('pyzbar', MagicMock())
-sys.modules.setdefault('pyzbar.pyzbar', MagicMock())
+# Only mock pyzbar if it cannot really be imported (e.g. the native zbar library is
+# missing). A blanket MagicMock makes DecodeQR.is_qr_scanner_available() lie -- it
+# reports "available" while extract_qr_data() silently decodes nothing, which breaks
+# any test that exercises real QR decoding (see test_real_screen_flows_satodime_simulated.py).
+try:
+    from pyzbar import pyzbar  # noqa: F401
+except Exception:
+    sys.modules.setdefault('pyzbar', MagicMock())
+    sys.modules.setdefault('pyzbar.pyzbar', MagicMock())
 sys.modules.setdefault('pysatochip', MagicMock())
 sys.modules.setdefault('pysatochip.JCconstants', MagicMock())
 sys.modules.setdefault('pysatochip.util', MagicMock())
@@ -50,6 +57,62 @@ class DummyBatteryHat(MagicMock):
         return None
 
 sys.modules['seedsigner.hardware.battery_hat'] = MagicMock(BatteryHat=DummyBatteryHat)
+
+
+def pytest_report_header(config):
+    """
+    Print the jcardsim preconditions and the runner's RAM at the top of the run.
+
+    Every simulated card is a JVM, so how much RAM is free decides whether the applet
+    suites run or skip; reporting it once is clearer than inferring it from mid-run skips.
+    """
+    try:
+        from jcardsim.simulator import (
+            available_ram_mb,
+            min_free_ram_mb,
+            total_ram_mb,
+            why_unavailable,
+        )
+    except Exception as exc:  # test-support import only; never break collection
+        return f"jcardsim: unavailable ({exc})"
+
+    reason = why_unavailable()
+    if reason:
+        return f"jcardsim: unavailable ({reason})"
+
+    available = available_ram_mb()
+    guard = min_free_ram_mb()
+    if available is None:
+        return f"jcardsim: available (free RAM unknown, JVM guard {guard}MB)"
+
+    total = total_ram_mb()
+    total_str = f" of {total}MB" if total is not None else ""
+    note = " -- below guard, JVM tests will skip" if available < guard else ""
+    return f"jcardsim: available ({available}MB free{total_str}, JVM guard {guard}MB){note}"
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """
+    Report "the simulator cannot run here" as a skip wherever it is raised.
+
+    jcardsim's SimulatedCard refuses to start under memory pressure and raises
+    JCardSimUnavailable. That happens inside a fixture or a context manager's __enter__ --
+    outside the test's own try/except -- so it would otherwise be a hard failure even
+    though the suite is designed to skip when the simulator is unavailable (AGENTS.md).
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.outcome != "failed" or call.excinfo is None:
+        return
+
+    from jcardsim import JCardSimUnavailable
+
+    if not call.excinfo.errisinstance(JCardSimUnavailable):
+        return
+
+    report.outcome = "skipped"
+    report.longrepr = (str(item.fspath), 0, str(call.excinfo.value))
 
 
 @pytest.fixture(scope="session", autouse=True)

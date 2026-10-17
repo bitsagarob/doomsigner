@@ -1,3 +1,14 @@
+# Runtime dependencies, pinned by version or by commit.
+#
+# NOT hash-locked, unlike l10n/requirements-l10n.txt. Upstream hash-locked this
+# file in SeedSigner/seedsigner#1018, but the fork cannot follow yet:
+# specter-card is a `git+` URL, and pip's hash-checking mode cannot verify a git
+# checkout at all. TODO: republish specter-card as a commit-pinned archive, then
+# hash-lock this file and tests/requirements.txt and collapse CI back to one
+# `pip install` invocation.
+#
+# Pillow and qrcode are deliberately pinned differently from upstream; don't
+# "resync" them without checking why.
 # BIP-352 silent payments. notTanveer's embit#145 branch, pinned to a commit rather
 # than to the branch name so a force-push upstream cannot silently change what we
 # build. Same fork-by-URL pattern as the pgpy pin below. Drop back to the PyPI

@@ -29,7 +29,10 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite is ~15 minutes of pytest on top of JDK setup, the applet checkouts and the
+    # pip install, which had grown to ~19 minutes -- close enough to the old 20 that the
+    # 3.12 leg timed out. 30 leaves room for adding tests without cutting coverage.
+    timeout-minutes: 30
     strategy:
       matrix:
         # 3.10: currently used by Seedsigner
@@ -49,12 +52,64 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             tests/requirements.txt
+      # The jcardsim tests run the real JavaCard applets. Without a JDK and the applet
+      # sources they skip with a reason rather than failing, so this is additive.
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+      - name: Check out JavaCard applet sources
+        run: |
+          mkdir -p "$HOME/applet-repos"
+          # Satochip-DIY is the aggregator: it carries the Satochip/SeedKeeper/Satodime
+          # sources *and* the JavaCard SDKs as submodules, so it needs --recursive.
+          git clone --recursive --depth 1 \
+            https://github.com/3rdIteration/Satochip-DIY.git \
+            "$HOME/applet-repos/Satochip-DIY"
+          # SeedKeeper is built at two tags (v0.1 and v0.2), so this one needs full
+          # history -- git archive cannot export a tag that was not fetched.
+          git clone --recursive \
+            https://github.com/Toporin/Seedkeeper-Applet.git \
+            "$HOME/applet-repos/Seedkeeper-Applet"
+          # Provides the jcardsim jar the simulator runs on, as well as the Keycard
+          # applet sources. Full history (no --depth): Keycard is pinned to tag 3.2 and
+          # exported with git archive, which cannot see a tag a shallow clone never fetched.
+          git clone --recursive \
+            https://github.com/status-im/status-keycard.git \
+            "$HOME/applet-repos/status-keycard"
+          # SmartPGP is pinned to its JavaCard 3.0.4 release tag; the oracle_javacard_sdks
+          # submodule carries the jc304_kit its sources compile against.
+          git clone --recursive --depth 1 --branch v1.23.2.0-javacard-3.0.4 \
+            https://github.com/ANSSI-FR/SmartPGP.git \
+            "$HOME/applet-repos/SmartPGP"
+          # SpecterDIY (the MemoryCardApplet) plus the specter_card Python client that
+          # drives it; sdks/ is a submodule. The 3rdIteration fork carries the 0.1-pytest
+          # tag upstream does not have.
+          git clone --recursive --depth 1 --branch 0.1-pytest \
+            https://github.com/3rdIteration/specter-javacard.git \
+            "$HOME/applet-repos/specter-javacard"
+      # The Luckfox release signers are provided by SeedSigner OS rather than
+      # vendored in this app, so the tests that actually sign a release need them
+      # fetched. Cloned outside the workspace so pytest does not collect
+      # seedsigner-os's own tests. Missing or older checkout: those tests skip with
+      # a reason, like the applet ones - it never breaks the run.
+      - name: Check out SeedSigner OS signing tools
+        run: |
+          git clone --depth 1 https://github.com/3rdIteration/seedsigner-os.git \
+            "$HOME/seedsigner-os" || echo "seedsigner-os unavailable; signing tests will skip"
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y gnupg2 pinentry-curses pinentry-tty libzbar0 libpcsclite-dev pcscd swig
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r tests/requirements.txt
+          # keycard-py is the Keycard backend the desktop simulator uses, and the
+          # jcardsim Keycard tests import it too; without it those tests error with
+          # "Unable to load keycard backend". Not part of the device requirements
+          # (requirements.txt), so it has its own file, shared with
+          # requirements-desktop.txt.
+          pip install -r requirements-keycard.txt
           # requirements-l10n.txt is hash-locked (SeedSigner OS installs it
           # during image builds). It needs its own pip invocation: one hashed
           # requirement makes pip demand hashes for everything else in the
@@ -67,6 +122,18 @@ jobs:
       - name: Test with pytest
         run: |
           mkdir -p artifacts
+          # Where the applet checkouts above landed. The jcardsim harness looks here for
+          # them and skips with a reason if any are missing, so this never breaks the run.
+          export SEEDSIGNER_APPLET_ROOT="$HOME/applet-repos"
+          # The specter_card Python client (SpecterDIY) is not importable by default; point
+          # SeedSigner's discovery at the checkout above.
+          export SEEDSIGNER_SPECTER_CARD_PY_PATH="$HOME/applet-repos/specter-javacard/py"
+          # Resolved by seedsigner.helpers.secure_boot_tools; absent -> skip.
+          export SEEDSIGNER_SECURE_BOOT_DIR="$HOME/seedsigner-os/opt/luckfox/secure-boot"
+          # The jcardsim memory guard exists so a developer's parallel pytest runs cannot
+          # freeze their machine; CI is one pytest process on a dedicated runner, where its
+          # 3 GB floor only skipped real-screen tests once page cache filled mid-run.
+          export SEEDSIGNER_JCARDSIM_MIN_FREE_RAM_MB=1024
           python -m pytest \
             --color=yes \
             --cov=seedsigner \
@@ -97,6 +164,10 @@ jobs:
 
   desktop:
     runs-on: ${{ matrix.os }}
+    # A healthy desktop leg is ~15 minutes. Windows occasionally stalls and then loses the
+    # runner after ~55; bound it so that shows up as a timeout (with whatever log pytest
+    # streamed, including the faulthandler dump) instead of a runner that vanishes.
+    timeout-minutes: 35
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
